@@ -1,0 +1,41 @@
+"""Configuration for the OpenAI cafe simulation MVP."""
+
+import os
+from openai import AsyncOpenAI
+
+# Model routing
+BARISTA_MODEL = "gpt-5.4-mini"
+CUSTOMER_MODEL = "gpt-5.4-mini"
+
+# OpenAI Responses API controls
+REASONING_EFFORT = "low"
+STORE_RESPONSES = False
+
+# Timing (real seconds)
+CUSTOMER_SPAWN_INTERVAL = 30
+BARISTA_POLL_INTERVAL = 2
+CUSTOMER_MAX_WAIT = 90
+SIM_DURATION = 600
+
+# Concurrency
+MAX_CONCURRENT_CUSTOMERS = 4
+MAX_CUSTOMER_HOPS = 12
+
+# Menu (name, price, prep_seconds)
+MENU = {
+    "espresso": {"name": "Espresso", "price": 3.00, "prep_seconds": 4, "available": True},
+    "latte": {"name": "Latte", "price": 5.50, "prep_seconds": 8, "available": True},
+    "cold_brew": {"name": "Cold Brew", "price": 5.00, "prep_seconds": 3, "available": True},
+    "tea": {"name": "Tea", "price": 3.50, "prep_seconds": 5, "available": True},
+    "muffin": {"name": "Blueberry Muffin", "price": 4.00, "prep_seconds": 2, "available": True},
+}
+
+# Tables
+TABLE_IDS = ["t1", "t2", "t3", "t4"]
+
+
+def build_openai_client() -> AsyncOpenAI:
+    """Build OpenAI async client and fail fast if key is missing."""
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY must be set before running the cafe simulation.")
+    return AsyncOpenAI()
