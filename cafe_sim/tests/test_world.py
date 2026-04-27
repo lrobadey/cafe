@@ -59,9 +59,21 @@ async def test_release_table_only_clears_owners_table(world):
     assert avail[a] == "empty"
     assert avail[b] == "occupied"
 
-    # Releasing a non-owner is a no-op (no exception, no other table cleared).
+    # The release log entry records the freed table id.
+    release_logs = [
+        e for e in world._state["event_log"] if e["action"] == "release_table"
+    ]
+    assert len(release_logs) == 1
+    assert release_logs[0]["agent"] == "cust_a"
+    assert release_logs[0]["detail"] == a
+
+    # Releasing a non-owner is a no-op: no other table cleared, no log written.
     await world.release_table("cust_unknown")
     assert world.get_table_availability()[b] == "occupied"
+    release_logs_after = [
+        e for e in world._state["event_log"] if e["action"] == "release_table"
+    ]
+    assert len(release_logs_after) == 1  # unchanged
 
 
 async def test_claim_order_succeeds_once_then_fails(world):

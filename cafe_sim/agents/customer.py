@@ -1,6 +1,5 @@
 """Customer agent loop and tools."""
 
-import asyncio
 import json
 import time
 
@@ -10,6 +9,7 @@ from config import (
     MAX_CUSTOMER_HOPS,
     REASONING_EFFORT,
     STORE_RESPONSES,
+    TABLE_IDS,
     build_openai_client,
 )
 
@@ -138,7 +138,7 @@ async def execute_customer_tool(
         empty = world.count_empty_tables()
         queue_len = world.queue_length()
         return (
-            f"You've entered the cafe. Empty tables: {empty}/4. "
+            f"You've entered the cafe. Empty tables: {empty}/{len(TABLE_IDS)}. "
             f"Orders currently in queue: {queue_len}. The cafe smells of coffee."
         )
 
@@ -182,7 +182,7 @@ async def execute_customer_tool(
             return "Order not found."
         waited = int(time.time() - state["arrived_at"])
         if order["status"] == "ready":
-            asyncio.create_task(world.mark_order_delivered(order_id))
+            await world.mark_order_delivered(order_id)
             return f"Your order is ready. You pick it up at the counter. Total wait time: {waited}s."
         if order["status"] == "pending":
             return f"Your order is still in the queue. Waited {waited}s so far."

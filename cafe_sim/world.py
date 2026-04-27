@@ -65,12 +65,16 @@ class WorldState:
         return None
 
     async def release_table(self, customer_id: str):
+        released_table_id: str | None = None
         async with self._lock:
-            for table in self._state["tables"].values():
+            for table_id, table in self._state["tables"].items():
                 if table["customer_id"] == customer_id:
                     table["status"] = "empty"
                     table["customer_id"] = None
-        self.log(customer_id, "release_table", "done")
+                    released_table_id = table_id
+                    break
+        if released_table_id is not None:
+            self.log(customer_id, "release_table", released_table_id)
 
     async def claim_order(self, barista_id: str, order_id: str) -> bool:
         async with self._lock:

@@ -39,6 +39,10 @@ async def run_simulation():
         active_customers.add(asyncio.create_task(run_customer(persona, world, customer_id)))
 
     barista_task.cancel()
+    try:
+        await barista_task
+    except asyncio.CancelledError:
+        pass
     if active_customers:
         await asyncio.gather(*active_customers, return_exceptions=True)
 

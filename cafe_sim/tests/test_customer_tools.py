@@ -1,6 +1,5 @@
 """Tests for execute_customer_tool against a real WorldState."""
 
-import asyncio
 import time
 
 import pytest
@@ -18,9 +17,12 @@ def _local_state():
 
 
 async def test_enter_cafe_reports_world_status(world):
+    from config import TABLE_IDS
+
     state = _local_state()
     result = await execute_customer_tool("enter_cafe", {}, "cust_a", world, state)
-    assert "Empty tables: 4/4" in result
+    expected = f"Empty tables: {len(TABLE_IDS)}/{len(TABLE_IDS)}"
+    assert expected in result
     assert "Orders currently in queue: 0" in result
 
 
@@ -122,7 +124,7 @@ async def test_check_order_claimed(world):
     assert "preparing" in result
 
 
-async def test_check_order_ready_schedules_delivery(world):
+async def test_check_order_ready_marks_delivered(world):
     state = _local_state()
     order_id = await world.place_order("cust_a", ["latte"])
     state["order_id"] = order_id
@@ -133,10 +135,8 @@ async def test_check_order_ready_schedules_delivery(world):
         "check_order", {"order_id": order_id}, "cust_a", world, state
     )
     assert "ready" in result
-    # The tool fires off mark_order_delivered as a background task;
-    # yield once so it can run.
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
+    # Delivery is awaited inline, so the world reflects it as soon as the
+    # tool returns — no background task race.
     assert world.get_order(order_id)["status"] == "delivered"
 
 
