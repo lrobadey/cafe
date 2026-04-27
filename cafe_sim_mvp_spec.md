@@ -1,21 +1,40 @@
-# LLM Cafe Simulation — MVP Spec
+# OpenAI Cafe Simulation — MVP Spec
 
-**Version:** 0.1  
-**Scope:** Tightest buildable version. No manager. No event bus. No Redis. No frontend. One barista. One world state dict. Customers spawn on a fixed timer.  
-**Goal:** A terminal-observable, genuinely emergent multi-agent simulation that runs in real time.
+**Version:** 0.2  
+**Scope:** Tightest buildable OpenAI-specific version. No manager. No event bus. No Redis. No frontend. One barista. One world state dict. Customers spawn on a fixed timer.  
+**Goal:** A terminal-observable, genuinely emergent multi-agent simulation that runs in real time using the OpenAI Responses API.
 
 ---
 
-## 1. Repository Structure
+## 1. System Shape
 
-```
+The MVP has four nested systems:
+
+1. **World** — the single source of truth: menu, tables, order queue, event log.
+2. **Agents** — OpenAI model loops for customers and the barista.
+3. **Tools** — local Python functions that let model decisions affect the world.
+4. **Runner** — the real-time clock that starts the barista and spawns customers.
+
+Agents never mutate world state directly. They can only request OpenAI function tools. Local Python code executes those tool requests against `WorldState`, then sends `function_call_output` items back to the model.
+
+OpenAI docs grounding:
+
+- Use the Responses API: `https://api.openai.com/v1/responses`
+- Use OpenAI function tools: `https://developers.openai.com/api/docs/guides/function-calling`
+- Handle tool loops by reading `response.output` items of type `function_call`, executing local code, and returning `function_call_output` items tied to the original `call_id`.
+
+---
+
+## 2. Repository Structure
+
+```text
 cafe_sim/
-├── main.py              # entry point — starts runner
+├── main.py              # entry point, starts runner
 ├── world.py             # WorldState class + asyncio lock
-├── runner.py            # SimulationRunner — clock, spawning
+├── runner.py            # SimulationRunner: clock, spawning
 ├── agents/
-│   ├── customer.py      # CustomerAgent class + tools
-│   └── barista.py       # BaristaAgent class + tools
+│   ├── customer.py      # CustomerAgent loop + customer tools
+│   └── barista.py       # BaristaAgent loop + barista tools
 ├── personas.py          # PERSONAS list
 ├── logger.py            # pretty terminal logger
 ├── config.py            # all constants in one place
@@ -23,58 +42,65 @@ cafe_sim/
 ```
 
 **requirements.txt**
-```
-anthropic>=0.25.0
-asyncio
+
+```text
+openai>=1.0.0
 ```
 
-That's the entire dependency surface. No LangChain. No framework.
+No LangChain. No Agents SDK. No Assistants API. No framework. `asyncio` is standard library and does not belong in requirements.
 
 ---
 
-## 2. Config (`config.py`)
+## 3. Config (`config.py`)
 
 Every tunable constant lives here. Nothing is hardcoded elsewhere.
 
 ```python
 # Model routing
-BARISTA_MODEL   = "claude-haiku-4-5"
-CUSTOMER_MODEL  = "claude-haiku-4-5"
+BARISTA_MODEL = "gpt-5.4-mini"
+CUSTOMER_MODEL = "gpt-5.4-mini"
+
+# OpenAI Responses API controls
+REASONING_EFFORT = "low"
+STORE_RESPONSES = False
 
 # Timing (real seconds)
-CUSTOMER_SPAWN_INTERVAL = 30      # new customer every N seconds
-BARISTA_POLL_INTERVAL   = 2       # barista checks queue every N seconds if idle
-CUSTOMER_MAX_WAIT       = 90      # seconds before impatient customer leaves
-SIM_DURATION            = 600     # total run time in seconds (10 min)
+CUSTOMER_SPAWN_INTERVAL = 30
+BARISTA_POLL_INTERVAL = 2
+CUSTOMER_MAX_WAIT = 90
+SIM_DURATION = 600
 
 # Concurrency
-MAX_CONCURRENT_CUSTOMERS = 4      # hard cap on simultaneous customer agents
-MAX_CUSTOMER_HOPS        = 12     # hard ReAct hop limit per customer
+MAX_CONCURRENT_CUSTOMERS = 4
+MAX_CUSTOMER_HOPS = 12
 
 # Menu (name, price, prep_seconds)
 MENU = {
-    "espresso":  {"name": "Espresso",      "price": 3.00, "prep_seconds": 4,  "available": True},
-    "latte":     {"name": "Latte",         "price": 5.50, "prep_seconds": 8,  "available": True},
-    "cold_brew": {"name": "Cold Brew",     "price": 5.00, "prep_seconds": 3,  "available": True},
-    "tea":       {"name": "Tea",           "price": 3.50, "prep_seconds": 5,  "available": True},
-    "muffin":    {"name": "Blueberry Muffin", "price": 4.00, "prep_seconds": 2, "available": True},
+    "espresso": {"name": "Espresso", "price": 3.00, "prep_seconds": 4, "available": True},
+    "latte": {"name": "Latte", "price": 5.50, "prep_seconds": 8, "available": True},
+    "cold_brew": {"name": "Cold Brew", "price": 5.00, "prep_seconds": 3, "available": True},
+    "tea": {"name": "Tea", "price": 3.50, "prep_seconds": 5, "available": True},
+    "muffin": {"name": "Blueberry Muffin", "price": 4.00, "prep_seconds": 2, "available": True},
 }
 
 # Tables
 TABLE_IDS = ["t1", "t2", "t3", "t4"]
 ```
 
+The process reads `OPENAI_API_KEY` from the environment. If the key is missing, fail fast before the simulation starts.
+
 ---
 
-## 3. World State (`world.py`)
+## 4. World State (`world.py`)
 
-Single shared dict behind an `asyncio.Lock`. All agents access world state exclusively through the methods on this class — never by reaching into the dict directly.
+Single shared dict behind an `asyncio.Lock`. All agents access world state exclusively through methods on this class.
 
 ```python
 import asyncio
 import time
 import uuid
 from config import MENU, TABLE_IDS
+
 
 class WorldState:
     def __init__(self):
@@ -85,383 +111,393 @@ class WorldState:
                 tid: {"status": "empty", "customer_id": None}
                 for tid in TABLE_IDS
             },
-            "order_queue": [],   # list of order dicts
-            "event_log": [],     # append-only
+            "order_queue": [],
+            "event_log": [],
         }
-
-    # ── Read helpers (no lock needed — reads are safe for our scale) ──────────
 
     def get_menu(self) -> dict:
         return {k: v for k, v in self._state["menu"].items() if v["available"]}
 
     def get_table_availability(self) -> dict:
-        """Returns {table_id: status} for all tables."""
         return {tid: t["status"] for tid, t in self._state["tables"].items()}
 
     def count_empty_tables(self) -> int:
         return sum(1 for t in self._state["tables"].values() if t["status"] == "empty")
 
     def get_order(self, order_id: str) -> dict | None:
-        for o in self._state["order_queue"]:
-            if o["order_id"] == order_id:
-                return dict(o)
+        for order in self._state["order_queue"]:
+            if order["order_id"] == order_id:
+                return dict(order)
         return None
 
-    def get_pending_unclaimed_orders(self) -> list:
+    def get_pending_unclaimed_orders(self) -> list[dict]:
         return [
-            dict(o) for o in self._state["order_queue"]
-            if o["status"] == "pending"
+            dict(order)
+            for order in self._state["order_queue"]
+            if order["status"] == "pending"
         ]
 
     def queue_length(self) -> int:
-        return len([o for o in self._state["order_queue"] if o["status"] != "delivered"])
-
-    # ── Write methods (all use lock) ──────────────────────────────────────────
+        return len([
+            order
+            for order in self._state["order_queue"]
+            if order["status"] != "delivered"
+        ])
 
     async def place_order(self, customer_id: str, items: list[str]) -> str:
-        """Append a new order. Returns order_id."""
         order_id = f"ord_{uuid.uuid4().hex[:6]}"
         order = {
-            "order_id":   order_id,
+            "order_id": order_id,
             "customer_id": customer_id,
-            "items":       items,
-            "status":     "pending",
+            "items": items,
+            "status": "pending",
             "barista_id": None,
-            "placed_at":  time.time(),
-            "ready_at":   None,
+            "placed_at": time.time(),
+            "ready_at": None,
         }
         async with self._lock:
             self._state["order_queue"].append(order)
-        self.log(customer_id, "place_order", f"items={items} → {order_id}")
+        self.log(customer_id, "place_order", f"items={items} -> {order_id}")
         return order_id
 
     async def claim_table(self, customer_id: str) -> str | None:
-        """Claim the first empty table. Returns table_id or None."""
         async with self._lock:
-            for tid, t in self._state["tables"].items():
-                if t["status"] == "empty":
-                    t["status"] = "occupied"
-                    t["customer_id"] = customer_id
-                    self.log(customer_id, "claim_table", tid)
-                    return tid
+            for table_id, table in self._state["tables"].items():
+                if table["status"] == "empty":
+                    table["status"] = "occupied"
+                    table["customer_id"] = customer_id
+                    self.log(customer_id, "claim_table", table_id)
+                    return table_id
         return None
 
     async def release_table(self, customer_id: str):
         async with self._lock:
-            for t in self._state["tables"].values():
-                if t["customer_id"] == customer_id:
-                    t["status"] = "empty"
-                    t["customer_id"] = None
+            for table in self._state["tables"].values():
+                if table["customer_id"] == customer_id:
+                    table["status"] = "empty"
+                    table["customer_id"] = None
         self.log(customer_id, "release_table", "done")
 
     async def claim_order(self, barista_id: str, order_id: str) -> bool:
-        """Returns True if successfully claimed, False if already taken."""
         async with self._lock:
-            for o in self._state["order_queue"]:
-                if o["order_id"] == order_id and o["status"] == "pending":
-                    o["status"]    = "claimed"
-                    o["barista_id"] = barista_id
+            for order in self._state["order_queue"]:
+                if order["order_id"] == order_id and order["status"] == "pending":
+                    order["status"] = "claimed"
+                    order["barista_id"] = barista_id
                     self.log(barista_id, "claim_order", order_id)
                     return True
         return False
 
     async def mark_order_ready(self, order_id: str):
         async with self._lock:
-            for o in self._state["order_queue"]:
-                if o["order_id"] == order_id:
-                    o["status"]   = "ready"
-                    o["ready_at"] = time.time()
+            for order in self._state["order_queue"]:
+                if order["order_id"] == order_id:
+                    order["status"] = "ready"
+                    order["ready_at"] = time.time()
         self.log("barista", "mark_ready", order_id)
 
     async def mark_order_delivered(self, order_id: str):
         async with self._lock:
-            for o in self._state["order_queue"]:
-                if o["order_id"] == order_id:
-                    o["status"] = "delivered"
+            for order in self._state["order_queue"]:
+                if order["order_id"] == order_id:
+                    order["status"] = "delivered"
         self.log("barista", "delivered", order_id)
 
     def log(self, agent_id: str, action: str, detail: str):
-        self._state["event_log"].append({
-            "t":       time.time(),
-            "agent":   agent_id,
-            "action":  action,
-            "detail":  detail,
-        })
+        entry = {"t": time.time(), "agent": agent_id, "action": action, "detail": detail}
+        self._state["event_log"].append(entry)
+        from logger import log_event
+        log_event(agent_id, f"{action}: {detail}")
 ```
 
 ---
 
-## 4. Personas (`personas.py`)
+## 5. Personas (`personas.py`)
 
-12 personas. Runner picks randomly at spawn time. Each is a 3-line string injected directly into the customer system prompt.
+12 personas. Runner picks randomly at spawn time. Each persona is injected into the customer instructions.
 
 ```python
 PERSONAS = [
     {
-        "name":   "Marcus",
-        "mood":   "hurried",
+        "name": "Marcus",
+        "mood": "hurried",
         "budget": 8.00,
-        "blurb":  "You're running late for a meeting. You want something fast — espresso or cold brew only. If the wait looks long, you'll skip it and leave.",
+        "blurb": "You're running late for a meeting. You want something fast: espresso or cold brew only. If the wait looks long, you'll skip it and leave.",
     },
     {
-        "name":   "Priya",
-        "mood":   "leisurely",
+        "name": "Priya",
+        "mood": "leisurely",
         "budget": 15.00,
-        "blurb":  "You have nowhere to be. You'll browse the menu carefully, maybe get a drink and a snack, and take your time enjoying it.",
+        "blurb": "You have nowhere to be. You'll browse the menu carefully, maybe get a drink and a snack, and take your time enjoying it.",
     },
     {
-        "name":   "Devon",
-        "mood":   "picky",
+        "name": "Devon",
+        "mood": "picky",
         "budget": 10.00,
-        "blurb":  "You care a lot about what you order. You dislike espresso. You prefer tea or cold brew. You'll only order if something genuinely appeals to you.",
+        "blurb": "You care a lot about what you order. You dislike espresso. You prefer tea or cold brew. You'll only order if something genuinely appeals to you.",
     },
     {
-        "name":   "Sam",
-        "mood":   "regular",
+        "name": "Sam",
+        "mood": "regular",
         "budget": 7.00,
-        "blurb":  "You come here all the time. You almost always get a latte. You're friendly and patient.",
+        "blurb": "You come here all the time. You almost always get a latte. You're friendly and patient.",
     },
     {
-        "name":   "Yuki",
-        "mood":   "budget-conscious",
+        "name": "Yuki",
+        "mood": "budget-conscious",
         "budget": 5.00,
-        "blurb":  "You only have $5. You'll order the cheapest thing that sounds good. If nothing fits your budget, you'll leave.",
+        "blurb": "You only have $5. You'll order the cheapest thing that sounds good. If nothing fits your budget, you'll leave.",
     },
     {
-        "name":   "Jordan",
-        "mood":   "indecisive",
+        "name": "Jordan",
+        "mood": "indecisive",
         "budget": 12.00,
-        "blurb":  "You can never quite decide what you want. You'll read the menu a couple of times before ordering. You might end up getting something random.",
+        "blurb": "You can never quite decide what you want. You'll read the menu a couple of times before ordering. You might end up getting something random.",
     },
     {
-        "name":   "Elena",
-        "mood":   "chatty",
+        "name": "Elena",
+        "mood": "chatty",
         "budget": 9.00,
-        "blurb":  "You love talking to people. You'll probably strike up a conversation while waiting. You're not in a rush.",
+        "blurb": "You love talking to people. You'll probably strike up a conversation while waiting. You're not in a rush.",
     },
     {
-        "name":   "Theo",
-        "mood":   "first-timer",
+        "name": "Theo",
+        "mood": "first-timer",
         "budget": 12.00,
-        "blurb":  "You've never been to this cafe before. You'll read the menu carefully and maybe ask for a recommendation.",
+        "blurb": "You've never been to this cafe before. You'll read the menu carefully and maybe ask for a recommendation.",
     },
     {
-        "name":   "Amara",
-        "mood":   "hungry",
+        "name": "Amara",
+        "mood": "hungry",
         "budget": 10.00,
-        "blurb":  "You're more hungry than thirsty. You definitely want a muffin, and maybe a tea to go with it.",
+        "blurb": "You're more hungry than thirsty. You definitely want a muffin, and maybe a tea to go with it.",
     },
     {
-        "name":   "Chris",
-        "mood":   "skeptical",
+        "name": "Chris",
+        "mood": "skeptical",
         "budget": 8.00,
-        "blurb":  "You think coffee shops are overpriced. You'll look at the menu and probably grimace at the prices. You might order the cheapest thing or leave.",
+        "blurb": "You think coffee shops are overpriced. You'll look at the menu and probably grimace at the prices. You might order the cheapest thing or leave.",
     },
     {
-        "name":   "Nadia",
-        "mood":   "tired",
+        "name": "Nadia",
+        "mood": "tired",
         "budget": 8.00,
-        "blurb":  "You're exhausted. You need caffeine badly. Espresso or latte, whatever gets you moving. You're patient because you don't have the energy not to be.",
+        "blurb": "You're exhausted. You need caffeine badly. Espresso or latte, whatever gets you moving. You're patient because you don't have the energy not to be.",
     },
     {
-        "name":   "Felix",
-        "mood":   "researcher",
+        "name": "Felix",
+        "mood": "researcher",
         "budget": 20.00,
-        "blurb":  "You're doing work at the cafe today. You'll order something, find a seat, and stay a while. You like cold brew for long sessions.",
+        "blurb": "You're doing work at the cafe today. You'll order something, find a seat, and stay a while. You like cold brew for long sessions.",
     },
 ]
 ```
 
 ---
 
-## 5. Customer Agent (`agents/customer.py`)
+## 6. OpenAI Runtime Contract
 
-### 5.1 Tool Definitions (passed to Anthropic API)
+OpenAI tools are requests, not authority. The model can ask to call `place_order`, but only local Python can validate the menu, write to `WorldState`, and return the outcome.
+
+Rules:
+
+- `WorldState` is the only source of truth.
+- Function calls are the only model outputs that change the simulation.
+- Assistant text is flavor and should be logged only if useful for observability.
+- Each OpenAI function tool uses strict JSON Schema.
+- `parallel_tool_calls=False` keeps each agent to one world action at a time.
+- Local `input_items` history is used instead of persistent OpenAI Conversations.
+- `store=STORE_RESPONSES` defaults to `False` for private local simulation runs.
+
+Shared OpenAI client helper:
+
+```python
+import os
+from openai import AsyncOpenAI
+
+
+def build_openai_client() -> AsyncOpenAI:
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise RuntimeError("OPENAI_API_KEY must be set before running the cafe simulation.")
+    return AsyncOpenAI()
+```
+
+---
+
+## 7. Customer Agent (`agents/customer.py`)
+
+### 7.1 Customer Tools
 
 ```python
 CUSTOMER_TOOLS = [
     {
+        "type": "function",
         "name": "enter_cafe",
-        "description": (
-            "Enter the cafe and assess whether it's worth staying. "
-            "Returns how many tables are available and how long the order queue is. "
-            "Call this first, before anything else."
-        ),
-        "input_schema": {
+        "description": "Enter the cafe and assess whether it is worth staying. Call this first.",
+        "parameters": {
             "type": "object",
             "properties": {},
             "required": [],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
     {
+        "type": "function",
         "name": "read_menu",
-        "description": (
-            "Read the full menu. Returns all currently available items "
-            "with their names and prices. Call this before deciding what to order."
-        ),
-        "input_schema": {
+        "description": "Read all currently available menu items with names and prices. Call this before ordering.",
+        "parameters": {
             "type": "object",
             "properties": {},
             "required": [],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
     {
+        "type": "function",
         "name": "place_order",
-        "description": (
-            "Place an order for one or more items from the menu. "
-            "Returns your order_id and your position in the queue. "
-            "Only call this once. Only order items that are on the menu."
-        ),
-        "input_schema": {
+        "description": "Place one order for one or more available menu item IDs.",
+        "parameters": {
             "type": "object",
             "properties": {
                 "items": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "List of item IDs to order (e.g. ['latte', 'muffin']).",
+                    "description": "Menu item IDs to order, such as ['latte', 'muffin'].",
                 }
             },
             "required": ["items"],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
     {
+        "type": "function",
         "name": "find_seat",
-        "description": (
-            "Claim an available table to sit at while waiting for your order. "
-            "Returns 'seated' with a table_id, or 'no_seats' if the cafe is full."
-        ),
-        "input_schema": {
+        "description": "Claim an available table while waiting for an order.",
+        "parameters": {
             "type": "object",
             "properties": {},
             "required": [],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
     {
+        "type": "function",
         "name": "check_order",
-        "description": (
-            "Check the status of your order. Returns one of: "
-            "'pending' (in queue), 'claimed' (barista is making it), "
-            "'ready' (waiting for you at the counter), 'delivered'. "
-            "Call this while you're waiting."
-        ),
-        "input_schema": {
+        "description": "Check the status of the customer's order.",
+        "parameters": {
             "type": "object",
             "properties": {
                 "order_id": {
                     "type": "string",
-                    "description": "The order_id returned when you placed your order.",
+                    "description": "The order_id returned by place_order.",
                 }
             },
             "required": ["order_id"],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
     {
+        "type": "function",
         "name": "leave",
-        "description": (
-            "Leave the cafe. Call this when you're done (satisfied), "
-            "if you've been waiting too long, if there are no seats, "
-            "or if nothing on the menu appeals to you. "
-            "Always call this as your final action."
-        ),
-        "input_schema": {
+        "description": "Leave the cafe. Always call this as the final action.",
+        "parameters": {
             "type": "object",
             "properties": {
                 "reason": {
                     "type": "string",
                     "enum": ["satisfied", "impatient", "no_seats", "nothing_appealing", "too_expensive"],
-                    "description": "Why you're leaving.",
+                    "description": "Why the customer is leaving.",
                 }
             },
             "required": ["reason"],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
 ]
 ```
 
-### 5.2 System Prompt
+### 7.2 Customer Instructions
 
 ```python
-def build_customer_system_prompt(persona: dict) -> str:
+def build_customer_instructions(persona: dict) -> str:
     return f"""You are {persona['name']}, a customer at a small coffee shop.
 
 {persona['blurb']}
 
 Your budget is ${persona['budget']:.2f}. Do not order items that exceed your total budget.
 
-You will use tools to navigate the cafe visit. Work through your visit step by step:
-1. Enter the cafe and assess the situation
-2. Read the menu
-3. Decide whether to order based on your personality and budget
-4. Place an order if you want something
-5. Find a seat if available
-6. Wait for your order, checking its status
-7. Leave when done (or if something isn't working for you)
+Use cafe tools to move through your visit:
+1. enter_cafe
+2. read_menu
+3. decide whether to order based on your personality and budget
+4. place_order if you want something
+5. find_seat if available
+6. check_order while waiting
+7. leave when done or when the cafe is not working for you
 
-Be true to your personality throughout. Think briefly before each tool call.
-Always call leave() as your final action — never end without it.
-You have a limited number of steps, so don't repeat yourself unnecessarily."""
+Be true to your personality. Keep moving. Always call leave as your final action."""
 ```
 
-### 5.3 Tool Execution
+### 7.3 Customer Tool Execution
 
 ```python
 import asyncio
 import time
+
 
 async def execute_customer_tool(
     tool_name: str,
     tool_input: dict,
     customer_id: str,
     world: "WorldState",
-    state: dict,  # local mutable state: {order_id, table_id, seated, arrived_at}
+    state: dict,
 ) -> str:
-    """Execute a customer tool call. Returns result string for the LLM."""
-
     if tool_name == "enter_cafe":
         empty = world.count_empty_tables()
-        q_len = world.queue_length()
+        queue_len = world.queue_length()
         return (
-            f"You've entered the cafe. "
-            f"Empty tables: {empty}/4. "
-            f"Orders currently in queue: {q_len}. "
-            f"The cafe smells of coffee."
+            f"You've entered the cafe. Empty tables: {empty}/4. "
+            f"Orders currently in queue: {queue_len}. The cafe smells of coffee."
         )
 
-    elif tool_name == "read_menu":
+    if tool_name == "read_menu":
         menu = world.get_menu()
         lines = [f"- {v['name']} (ID: {k}): ${v['price']:.2f}" for k, v in menu.items()]
         return "Menu:\n" + "\n".join(lines)
 
-    elif tool_name == "place_order":
+    if tool_name == "place_order":
         items = tool_input.get("items", [])
-        # Validate items exist on menu
         available = world.get_menu()
-        invalid = [i for i in items if i not in available]
+        invalid = [item for item in items if item not in available]
         if invalid:
-            return f"Could not place order. These items aren't on the menu: {invalid}. Try again with valid item IDs."
+            return f"Could not place order. These item IDs are not on the menu: {invalid}."
         if state.get("order_id"):
             return "You've already placed an order. Check its status with check_order."
         order_id = await world.place_order(customer_id, items)
         state["order_id"] = order_id
-        q_pos = world.queue_length()
-        item_names = [available[i]["name"] for i in items if i in available]
+        item_names = [available[item]["name"] for item in items]
         return (
-            f"Order placed! Order ID: {order_id}. "
+            f"Order placed. Order ID: {order_id}. "
             f"You ordered: {', '.join(item_names)}. "
-            f"You are number {q_pos} in the queue."
+            f"You are number {world.queue_length()} in the queue."
         )
 
-    elif tool_name == "find_seat":
+    if tool_name == "find_seat":
         if state.get("table_id"):
             return f"You're already seated at table {state['table_id']}."
         table_id = await world.claim_table(customer_id)
         if table_id:
             state["table_id"] = table_id
-            return f"You found a seat at table {table_id}. Make yourself comfortable."
-        else:
-            return "No seats available right now. You're standing while you wait."
+            return f"You found a seat at table {table_id}."
+        return "No seats are available right now. You're standing while you wait."
 
-    elif tool_name == "check_order":
+    if tool_name == "check_order":
         order_id = tool_input.get("order_id") or state.get("order_id")
         if not order_id:
             return "You don't have an order to check."
@@ -470,20 +506,17 @@ async def execute_customer_tool(
             return "Order not found."
         waited = int(time.time() - state["arrived_at"])
         if order["status"] == "ready":
-            # Auto-deliver: mark delivered, return success
             asyncio.create_task(world.mark_order_delivered(order_id))
-            return (
-                f"Your order is ready! You pick it up at the counter. "
-                f"Total wait time: {waited}s."
-            )
-        status_msgs = {
-            "pending":  "Your order is still in the queue. The barista hasn't started it yet.",
-            "claimed":  "The barista has your order and is preparing it now.",
-            "delivered": "You already received your order.",
-        }
-        return status_msgs.get(order["status"], "Unknown status.") + f" (waited {waited}s so far)"
+            return f"Your order is ready. You pick it up at the counter. Total wait time: {waited}s."
+        if order["status"] == "pending":
+            return f"Your order is still in the queue. Waited {waited}s so far."
+        if order["status"] == "claimed":
+            return f"The barista is preparing your order now. Waited {waited}s so far."
+        if order["status"] == "delivered":
+            return "You already received your order."
+        return f"Unknown order status: {order['status']}."
 
-    elif tool_name == "leave":
+    if tool_name == "leave":
         reason = tool_input.get("reason", "satisfied")
         if state.get("table_id"):
             await world.release_table(customer_id)
@@ -494,93 +527,80 @@ async def execute_customer_tool(
     return f"Unknown tool: {tool_name}"
 ```
 
-### 5.4 Agent Loop
+### 7.4 Customer Loop
 
 ```python
-import anthropic
-from config import CUSTOMER_MODEL, MAX_CUSTOMER_HOPS, CUSTOMER_MAX_WAIT
+import json
+import time
+from openai import AsyncOpenAI
+from config import CUSTOMER_MODEL, MAX_CUSTOMER_HOPS, CUSTOMER_MAX_WAIT, REASONING_EFFORT, STORE_RESPONSES
 
-client = anthropic.AsyncAnthropic()
+client = AsyncOpenAI()
+
 
 async def run_customer(persona: dict, world: "WorldState", customer_id: str):
-    system = build_customer_system_prompt(persona)
-    messages = []
-    local_state = {
-        "order_id":   None,
-        "table_id":   None,
-        "done":       False,
-        "arrived_at": time.time(),
-    }
-
-    # Seed the conversation
-    messages.append({
+    instructions = build_customer_instructions(persona)
+    input_items = [{
         "role": "user",
         "content": (
             f"You are {persona['name']}. You've just arrived at the cafe door. "
             f"Begin your visit. Remember you have ${persona['budget']:.2f} to spend."
         ),
-    })
+    }]
+    local_state = {
+        "order_id": None,
+        "table_id": None,
+        "done": False,
+        "arrived_at": time.time(),
+    }
 
     hops = 0
     while not local_state["done"] and hops < MAX_CUSTOMER_HOPS:
-
-        # Patience check — insert a nudge if they've waited too long
         waited = time.time() - local_state["arrived_at"]
-        if waited > CUSTOMER_MAX_WAIT and local_state.get("order_id") and not local_state["done"]:
-            messages.append({
+        if waited > CUSTOMER_MAX_WAIT and local_state.get("order_id"):
+            input_items.append({
                 "role": "user",
-                "content": (
-                    f"You've now been waiting {int(waited)} seconds. "
-                    f"You're getting impatient. Consider leaving if your order still isn't ready."
-                ),
+                "content": f"You've now been waiting {int(waited)} seconds. Consider leaving if your order still isn't ready.",
             })
 
-        response = await client.messages.create(
+        response = await client.responses.create(
             model=CUSTOMER_MODEL,
-            max_tokens=512,
-            system=system,
+            instructions=instructions,
+            input=input_items,
             tools=CUSTOMER_TOOLS,
-            messages=messages,
+            max_output_tokens=512,
+            parallel_tool_calls=False,
+            store=STORE_RESPONSES,
+            reasoning={"effort": REASONING_EFFORT},
         )
 
-        # Append assistant turn
-        messages.append({"role": "assistant", "content": response.content})
+        input_items.extend(response.output)
+        function_calls = [item for item in response.output if item.type == "function_call"]
 
-        # If no tool use, model is done reasoning — prompt it to act
-        if response.stop_reason == "end_turn":
-            # Check if it forgot to call leave()
+        if not function_calls:
             if not local_state["done"]:
-                messages.append({
-                    "role": "user",
-                    "content": "Please call leave() to finish your visit.",
-                })
+                input_items.append({"role": "user", "content": "Please call leave to finish your visit."})
                 hops += 1
                 continue
             break
 
-        # Process all tool calls in this response
-        tool_results = []
-        for block in response.content:
-            if block.type == "tool_use":
-                result = await execute_customer_tool(
-                    block.name,
-                    block.input,
-                    customer_id,
-                    world,
-                    local_state,
-                )
-                tool_results.append({
-                    "type":        "tool_result",
-                    "tool_use_id": block.id,
-                    "content":     result,
-                })
-
-        if tool_results:
-            messages.append({"role": "user", "content": tool_results})
+        for call in function_calls:
+            tool_input = json.loads(call.arguments or "{}")
+            result = await execute_customer_tool(
+                call.name,
+                tool_input,
+                customer_id,
+                world,
+                local_state,
+            )
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": call.call_id,
+                "output": result,
+            })
 
         hops += 1
 
-    # Hard exit — clean up if hop limit hit
     if not local_state["done"]:
         if local_state.get("table_id"):
             await world.release_table(customer_id)
@@ -589,238 +609,216 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
 
 ---
 
-## 6. Barista Agent (`agents/barista.py`)
+## 8. Barista Agent (`agents/barista.py`)
 
-### 6.1 Tool Definitions
+### 8.1 Barista Tools
 
 ```python
 BARISTA_TOOLS = [
     {
+        "type": "function",
         "name": "check_queue",
-        "description": (
-            "Check the current order queue. Returns all pending, unclaimed orders "
-            "waiting to be made. Call this at the start of each work cycle."
-        ),
-        "input_schema": {
+        "description": "Check all pending, unclaimed orders. Call at the start of each work cycle.",
+        "parameters": {
             "type": "object",
             "properties": {},
             "required": [],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
     {
+        "type": "function",
         "name": "claim_order",
-        "description": (
-            "Claim an order from the queue to start making it. "
-            "Returns 'claimed' if successful, 'already_claimed' if another barista got it first. "
-            "Claim one order at a time."
-        ),
-        "input_schema": {
+        "description": "Claim one pending order by order_id.",
+        "parameters": {
             "type": "object",
             "properties": {
-                "order_id": {
-                    "type": "string",
-                    "description": "The order_id to claim.",
-                }
+                "order_id": {"type": "string", "description": "The order_id to claim."}
             },
             "required": ["order_id"],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
     {
+        "type": "function",
         "name": "prepare_order",
-        "description": (
-            "Prepare the claimed order. This takes real time based on the items. "
-            "Returns when the order is ready. Call this after claiming an order."
-        ),
-        "input_schema": {
+        "description": "Prepare a claimed order. This takes real time based on the items.",
+        "parameters": {
             "type": "object",
             "properties": {
-                "order_id": {
-                    "type": "string",
-                    "description": "The order_id to prepare.",
-                }
+                "order_id": {"type": "string", "description": "The order_id to prepare."}
             },
             "required": ["order_id"],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
     {
+        "type": "function",
         "name": "mark_ready",
-        "description": (
-            "Mark the prepared order as ready for the customer to pick up. "
-            "Call this immediately after prepare_order completes."
-        ),
-        "input_schema": {
+        "description": "Mark a prepared order as ready for pickup.",
+        "parameters": {
             "type": "object",
             "properties": {
-                "order_id": {
-                    "type": "string",
-                    "description": "The order_id to mark ready.",
-                }
+                "order_id": {"type": "string", "description": "The order_id to mark ready."}
             },
             "required": ["order_id"],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
     {
+        "type": "function",
         "name": "idle",
-        "description": (
-            "Nothing in the queue right now. Take a short break. "
-            "Call this when check_queue returns no orders. "
-            "You'll automatically be prompted again soon."
-        ),
-        "input_schema": {
+        "description": "Take a short break when the queue is empty.",
+        "parameters": {
             "type": "object",
             "properties": {},
             "required": [],
+            "additionalProperties": False,
         },
+        "strict": True,
     },
 ]
 ```
 
-### 6.2 System Prompt
+### 8.2 Barista Instructions
 
 ```python
-BARISTA_SYSTEM = """You are Alex, the barista at a small coffee shop.
+BARISTA_INSTRUCTIONS = """You are Alex, the barista at a small coffee shop.
 
-Your job is simple: check the order queue, claim orders one at a time, prepare them, and mark them ready. Work through orders efficiently. 
+Your job is simple: check the order queue, claim one order at a time, prepare it, and mark it ready.
 
-Work cycle each loop:
-1. check_queue — see what's waiting
-2. If orders exist: claim_order → prepare_order → mark_ready → loop back
-3. If queue is empty: call idle
+Work cycle:
+1. check_queue
+2. If orders exist: claim_order, prepare_order, mark_ready
+3. If the queue is empty: idle
 
-Stay focused. Don't overthink. Keep moving through orders."""
+Stay focused. Keep the queue moving."""
 ```
 
-### 6.3 Tool Execution
+### 8.3 Barista Tool Execution
 
 ```python
 import asyncio
 from config import MENU, BARISTA_POLL_INTERVAL
 
-async def execute_barista_tool(
-    tool_name: str,
-    tool_input: dict,
-    world: "WorldState",
-) -> str:
 
+async def execute_barista_tool(tool_name: str, tool_input: dict, world: "WorldState") -> str:
     if tool_name == "check_queue":
         pending = world.get_pending_unclaimed_orders()
         if not pending:
             return "Queue is empty. Nothing to do right now."
         lines = []
-        for o in pending:
-            items_str = ", ".join(o["items"])
-            lines.append(f"- Order {o['order_id']}: {items_str} (for customer {o['customer_id']})")
+        for order in pending:
+            items_str = ", ".join(order["items"])
+            lines.append(f"- Order {order['order_id']}: {items_str} for customer {order['customer_id']}")
         return f"{len(pending)} order(s) waiting:\n" + "\n".join(lines)
 
-    elif tool_name == "claim_order":
+    if tool_name == "claim_order":
         order_id = tool_input["order_id"]
         success = await world.claim_order("barista_alex", order_id)
         if success:
             order = world.get_order(order_id)
-            items_str = ", ".join(order["items"])
-            return f"Claimed order {order_id}: {items_str}. Start preparing it."
+            return f"Claimed order {order_id}: {', '.join(order['items'])}. Start preparing it."
         return f"Order {order_id} was already claimed. Check the queue again."
 
-    elif tool_name == "prepare_order":
+    if tool_name == "prepare_order":
         order_id = tool_input["order_id"]
         order = world.get_order(order_id)
         if not order:
             return f"Order {order_id} not found."
-        # Calculate prep time: max of all items' prep_seconds
-        prep_time = max(
-            MENU.get(item, {}).get("prep_seconds", 5)
-            for item in order["items"]
-        )
+        prep_time = max(MENU.get(item, {}).get("prep_seconds", 5) for item in order["items"])
         await asyncio.sleep(prep_time)
         return f"Prepared order {order_id} in {prep_time}s. Mark it ready."
 
-    elif tool_name == "mark_ready":
+    if tool_name == "mark_ready":
         order_id = tool_input["order_id"]
         await world.mark_order_ready(order_id)
         return f"Order {order_id} is ready for pickup. Check the queue for more orders."
 
-    elif tool_name == "idle":
+    if tool_name == "idle":
         await asyncio.sleep(BARISTA_POLL_INTERVAL)
         return "Break done. Check the queue again."
 
     return f"Unknown tool: {tool_name}"
 ```
 
-### 6.4 Barista Loop
+### 8.4 Barista Loop
 
-The barista runs a **stateless loop**: each iteration is a fresh short conversation (3–5 turns max). This keeps context small and prevents drift over a long shift.
+The barista runs a stateless loop. Each work cycle is a fresh short conversation to keep context small.
 
 ```python
+import json
+from openai import AsyncOpenAI
+from config import BARISTA_MODEL, REASONING_EFFORT, STORE_RESPONSES
+
+client = AsyncOpenAI()
+
+
 async def run_barista(world: "WorldState"):
-    """Runs forever until the simulation ends."""
     while True:
-        messages = [{
+        input_items = [{
             "role": "user",
             "content": "Check the queue and handle the next order. Or idle if empty.",
         }]
 
-        # Short bounded loop: claim + prepare + mark_ready = 4 tool calls max
         for _ in range(6):
-            response = await client.messages.create(
+            response = await client.responses.create(
                 model=BARISTA_MODEL,
-                max_tokens=256,
-                system=BARISTA_SYSTEM,
+                instructions=BARISTA_INSTRUCTIONS,
+                input=input_items,
                 tools=BARISTA_TOOLS,
-                messages=messages,
+                max_output_tokens=256,
+                parallel_tool_calls=False,
+                store=STORE_RESPONSES,
+                reasoning={"effort": REASONING_EFFORT},
             )
 
-            messages.append({"role": "assistant", "content": response.content})
+            input_items.extend(response.output)
+            function_calls = [item for item in response.output if item.type == "function_call"]
 
-            if response.stop_reason == "end_turn":
+            if not function_calls:
                 break
 
-            tool_results = []
             done_cycle = False
-            for block in response.content:
-                if block.type == "tool_use":
-                    result = await execute_barista_tool(block.name, block.input, world)
-                    tool_results.append({
-                        "type":        "tool_result",
-                        "tool_use_id": block.id,
-                        "content":     result,
-                    })
-                    # After mark_ready or idle, end this conversation cycle
-                    if block.name in ("mark_ready", "idle"):
-                        done_cycle = True
-
-            if tool_results:
-                messages.append({"role": "user", "content": tool_results})
+            for call in function_calls:
+                tool_input = json.loads(call.arguments or "{}")
+                result = await execute_barista_tool(call.name, tool_input, world)
+                input_items.append({
+                    "type": "function_call_output",
+                    "call_id": call.call_id,
+                    "output": result,
+                })
+                if call.name in ("mark_ready", "idle"):
+                    done_cycle = True
 
             if done_cycle:
                 break
-        # Loop immediately — barista never stops working
 ```
 
 ---
 
-## 7. Simulation Runner (`runner.py`)
+## 9. Simulation Runner (`runner.py`)
 
 ```python
 import asyncio
 import random
 import time
 import uuid
-from config import (
-    CUSTOMER_SPAWN_INTERVAL,
-    MAX_CONCURRENT_CUSTOMERS,
-    SIM_DURATION,
-)
+from config import CUSTOMER_SPAWN_INTERVAL, MAX_CONCURRENT_CUSTOMERS, SIM_DURATION
 from personas import PERSONAS
 from agents.customer import run_customer
 from agents.barista import run_barista
 from world import WorldState
 from logger import log_event
 
+
 async def run_simulation():
     world = WorldState()
-    active_customers = set()  # track running customer tasks
-
-    # Start the barista as a persistent background task
+    active_customers = set()
     barista_task = asyncio.create_task(run_barista(world))
 
     start_time = time.time()
@@ -830,27 +828,19 @@ async def run_simulation():
 
     while time.time() - start_time < SIM_DURATION:
         await asyncio.sleep(CUSTOMER_SPAWN_INTERVAL)
-
-        # Prune finished customer tasks
-        active_customers = {t for t in active_customers if not t.done()}
+        active_customers = {task for task in active_customers if not task.done()}
 
         if len(active_customers) >= MAX_CONCURRENT_CUSTOMERS:
             log_event("RUNNER", f"At capacity ({MAX_CONCURRENT_CUSTOMERS} customers). Skipping spawn.")
             continue
 
-        # Spawn a customer
         persona = random.choice(PERSONAS)
         customer_id = f"cust_{uuid.uuid4().hex[:4]}"
         spawn_count += 1
 
         log_event("RUNNER", f"Spawning customer #{spawn_count}: {persona['name']} ({persona['mood']})")
+        active_customers.add(asyncio.create_task(run_customer(persona, world, customer_id)))
 
-        task = asyncio.create_task(
-            run_customer(persona, world, customer_id)
-        )
-        active_customers.add(task)
-
-    # Sim over — cancel barista, wait for customers to finish
     barista_task.cancel()
     if active_customers:
         await asyncio.gather(*active_customers, return_exceptions=True)
@@ -861,48 +851,37 @@ async def run_simulation():
 
 ---
 
-## 8. Logger (`logger.py`)
-
-Simple, readable terminal output. Each agent gets a color.
+## 10. Logger (`logger.py`)
 
 ```python
 import time
 
 COLORS = {
-    "RUNNER":  "\033[90m",   # gray
-    "barista": "\033[36m",   # cyan
-    "cust":    "\033[33m",   # yellow (prefix match)
+    "RUNNER": "\033[90m",
+    "barista": "\033[36m",
+    "cust": "\033[33m",
 }
 RESET = "\033[0m"
 
+
 def log_event(agent_id: str, message: str):
     color = COLORS.get(agent_id, "")
-    for prefix, c in COLORS.items():
+    for prefix, prefix_color in COLORS.items():
         if agent_id.startswith(prefix):
-            color = c
+            color = prefix_color
             break
-    ts = time.strftime("%H:%M:%S")
-    print(f"{color}[{ts}] [{agent_id}] {message}{RESET}")
-```
-
-Hook this into `world.log()` so every world state write prints to terminal automatically.
-
-```python
-# In WorldState.log():
-def log(self, agent_id: str, action: str, detail: str):
-    entry = {"t": time.time(), "agent": agent_id, "action": action, "detail": detail}
-    self._state["event_log"].append(entry)
-    from logger import log_event
-    log_event(agent_id, f"{action}: {detail}")
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"{color}[{timestamp}] [{agent_id}] {message}{RESET}")
 ```
 
 ---
 
-## 9. Entry Point (`main.py`)
+## 11. Entry Point (`main.py`)
 
 ```python
 import asyncio
 from runner import run_simulation
+
 
 if __name__ == "__main__":
     asyncio.run(run_simulation())
@@ -910,62 +889,113 @@ if __name__ == "__main__":
 
 ---
 
-## 10. Exact API Call Shape
+## 12. Exact OpenAI Responses API Call Shape
 
-Every LLM call in this system looks like this. No framework abstractions.
+Every model turn uses this shape:
 
 ```python
-response = await client.messages.create(
+response = await client.responses.create(
     model=MODEL,
-    max_tokens=512,          # customers / 256 for barista
-    system=SYSTEM_PROMPT,
+    instructions=SYSTEM_PROMPT,
+    input=input_items,
     tools=TOOLS,
-    messages=messages,       # full history for this agent's current loop
+    max_output_tokens=512,
+    parallel_tool_calls=False,
+    store=STORE_RESPONSES,
+    reasoning={"effort": REASONING_EFFORT},
 )
 ```
 
-Tool results are fed back as:
+Function calls are read from:
+
 ```python
-{"role": "user", "content": [
-    {"type": "tool_result", "tool_use_id": block.id, "content": result_string}
-]}
+function_calls = [
+    item
+    for item in response.output
+    if item.type == "function_call"
+]
 ```
 
-No streaming. No batching. Simple request-response.
+Tool outputs are appended back into local history as:
+
+```python
+{
+    "type": "function_call_output",
+    "call_id": call.call_id,
+    "output": result_string,
+}
+```
+
+The implementation should preserve the model output items in `input_items` before adding function outputs:
+
+```python
+input_items.extend(response.output)
+input_items.append({
+    "type": "function_call_output",
+    "call_id": call.call_id,
+    "output": result_string,
+})
+```
+
+This keeps the local conversation complete without using persistent OpenAI Conversations.
 
 ---
 
-## 11. What You Can Observe Running This
+## 13. What You Can Observe Running This
 
-With default config (10 min sim, customer every 30s, max 4 concurrent):
+With default config: 10 minute sim, customer every 30 seconds, max 4 concurrent customers.
 
-- ~20 customer visits
-- Each customer: 6–10 tool calls, ~15–25 real seconds of lifecycle
-- Barista: continuous loop, ~1 order every 10–15 seconds
-- Terminal output: color-coded stream of every action by every agent
-- Natural emergent pressure: at minutes 3–5, with 3–4 concurrent customers, the queue backs up, patience checks start firing, hurried personas leave early
+- About 20 customer visits.
+- Each customer usually performs 6-10 tool calls.
+- Barista continuously checks the queue and prepares about one order every 10-15 seconds.
+- Terminal output shows every world-changing action.
+- Natural pressure emerges around minutes 3-5 as customer concurrency and queue length rise.
 
-**Failure cases you'll see naturally:**
-- Customer spawns, finds no seats, leaves immediately
-- Customer places order, hits patience limit before barista catches up, leaves (order stays in queue, barista prepares it anyway, marks ready — no one picks it up)
-- Barista claims order while customer is mid-loop checking status
+Expected emergent failure cases:
 
-All of these are features. They reveal the system working.
+- Customer enters, finds no seats, leaves immediately.
+- Customer places order, hits patience limit, and leaves before pickup.
+- Barista prepares an abandoned order anyway because it remains in the queue.
+- Customer checks status while the barista has claimed but not finished the order.
+
+These are features. They reveal the system working.
 
 ---
 
-## 12. Line Count Estimate
+## 14. Verification Plan
+
+Static verification:
+
+- No legacy provider imports, legacy model names, legacy schema fields, legacy tool-result fields, or legacy message-call shapes remain.
+- Every OpenAI tool has `type: "function"`, `parameters`, `strict: True`, and `additionalProperties: False`.
+- Every tool parameter object lists all properties in `required`.
+
+Dry-run behavior with fake OpenAI responses:
+
+- Customer can enter, read menu, place order, find seat, check order, and leave.
+- Barista can check queue, claim order, prepare order, and mark ready.
+- Invalid item IDs return a local tool error without corrupting world state.
+
+Live smoke test:
+
+- Temporarily set `SIM_DURATION = 60`, `CUSTOMER_SPAWN_INTERVAL = 10`, and `MAX_CONCURRENT_CUSTOMERS = 2`.
+- Run the terminal simulation with `OPENAI_API_KEY` set.
+- Confirm logs show customer actions, barista actions, order state transitions, and final summary.
+
+---
+
+## 15. Line Count Estimate
 
 | File | Est. Lines |
-|---|---|
-| config.py | 30 |
+|---|---:|
+| config.py | 35 |
 | world.py | 110 |
 | personas.py | 80 |
-| agents/customer.py | 180 |
-| agents/barista.py | 130 |
+| agents/customer.py | 210 |
+| agents/barista.py | 150 |
 | runner.py | 60 |
 | logger.py | 20 |
 | main.py | 5 |
-| **Total** | **~615** |
+| **Total** | **~670** |
 
-Buildable in an afternoon. Every line is load-bearing.
+Buildable in an afternoon. The provider-specific surface is now OpenAI Responses API only.
