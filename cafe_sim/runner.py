@@ -42,5 +42,13 @@ async def run_simulation():
     if active_customers:
         await asyncio.gather(*active_customers, return_exceptions=True)
 
+    summary = world.get_shift_summary()
     log_event("RUNNER", f"Simulation complete. {spawn_count} customers visited.")
-    log_event("RUNNER", f"Total events logged: {len(world._state['event_log'])}")
+    log_event("RUNNER", f"Revenue: ${summary['revenue']:.2f}")
+    log_event("RUNNER", f"Orders created: {summary['orders_created']}")
+    log_event("RUNNER", f"Orders delivered: {summary['orders_delivered']}")
+    log_event("RUNNER", f"Orders not delivered: {summary['orders_not_delivered']}")
+    average_wait = summary["average_wait_seconds"]
+    average_wait_display = f"{average_wait}s" if average_wait is not None else "n/a"
+    log_event("RUNNER", f"Average wait: {average_wait_display}")
+    log_event("RUNNER", f"Total events logged: {summary['events_logged']}")

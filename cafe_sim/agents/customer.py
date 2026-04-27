@@ -182,7 +182,7 @@ async def execute_customer_tool(
             return "Order not found."
         waited = int(time.time() - state["arrived_at"])
         if order["status"] == "ready":
-            asyncio.create_task(world.mark_order_delivered(order_id))
+            await world.mark_order_delivered(order_id)
             return f"Your order is ready. You pick it up at the counter. Total wait time: {waited}s."
         if order["status"] == "pending":
             return f"Your order is still in the queue. Waited {waited}s so far."

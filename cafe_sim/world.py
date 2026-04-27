@@ -15,6 +15,7 @@ class WorldState:
             "tables": {tid: {"status": "empty", "customer_id": None} for tid in TABLE_IDS},
             "order_queue": [],
             "event_log": [],
+            "revenue": 0.0,
         }
 
     def get_menu(self) -> dict:
@@ -40,10 +41,12 @@ class WorldState:
 
     async def place_order(self, customer_id: str, items: list[str]) -> str:
         order_id = f"ord_{uuid.uuid4().hex[:6]}"
+        total_price = sum(self._state["menu"][item]["price"] for item in items)
         order = {
             "order_id": order_id,
             "customer_id": customer_id,
             "items": items,
+            "total_price": total_price,
             "status": "pending",
             "barista_id": None,
             "placed_at": time.time(),
@@ -51,8 +54,27 @@ class WorldState:
         }
         async with self._lock:
             self._state["order_queue"].append(order)
+            self._state["revenue"] += total_price
         self.log(customer_id, "place_order", f"items={items} -> {order_id}")
         return order_id
+
+    def get_shift_summary(self) -> dict:
+        orders = self._state["order_queue"]
+        delivered = [order for order in orders if order["status"] == "delivered"]
+        waits = [
+            order["ready_at"] - order["placed_at"]
+            for order in orders
+            if order.get("ready_at") is not None
+        ]
+
+        return {
+            "revenue": round(self._state["revenue"], 2),
+            "orders_created": len(orders),
+            "orders_delivered": len(delivered),
+            "orders_not_delivered": len(orders) - len(delivered),
+            "average_wait_seconds": round(sum(waits) / len(waits), 1) if waits else None,
+            "events_logged": len(self._state["event_log"]),
+        }
 
     async def claim_table(self, customer_id: str) -> str | None:
         async with self._lock:
