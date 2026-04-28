@@ -204,6 +204,17 @@ async def execute_customer_tool(
 
 
 async def run_customer(persona: dict, world: "WorldState", customer_id: str):
+    world.report(
+        customer_id,
+        "agent_started",
+        {
+            "agent_type": "customer",
+            "customer_id": customer_id,
+            "persona_name": persona["name"],
+            "persona_mood": persona["mood"],
+            "budget": persona["budget"],
+        },
+    )
     instructions = build_customer_instructions(persona)
     input_items = [
         {
@@ -223,6 +234,16 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
 
     hops = 0
     while not local_state["done"] and hops < MAX_CUSTOMER_HOPS:
+        world.report(
+            customer_id,
+            "agent_hop_started",
+            {
+                "agent_type": "customer",
+                "hop": hops + 1,
+                "order_id": local_state.get("order_id"),
+                "table_id": local_state.get("table_id"),
+            },
+        )
         waited = time.time() - local_state["arrived_at"]
         if waited > CUSTOMER_MAX_WAIT and local_state.get("order_id"):
             input_items.append(
@@ -245,6 +266,17 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
 
         input_items.extend(response.output)
         function_calls = [item for item in response.output if item.type == "function_call"]
+        world.report(
+            customer_id,
+            "model_response",
+            {
+                "agent_type": "customer",
+                "hop": hops + 1,
+                "response_id": getattr(response, "id", None),
+                "function_call_count": len(function_calls),
+                "output_item_count": len(response.output),
+            },
+        )
 
         if not function_calls:
             if not local_state["done"]:
@@ -255,12 +287,34 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
 
         for call in function_calls:
             tool_input = json.loads(call.arguments or "{}")
+            world.report(
+                customer_id,
+                "tool_call_requested",
+                {
+                    "agent_type": "customer",
+                    "hop": hops + 1,
+                    "tool_name": call.name,
+                    "call_id": call.call_id,
+                    "arguments": tool_input,
+                },
+            )
             result = await execute_customer_tool(
                 call.name,
                 tool_input,
                 customer_id,
                 world,
                 local_state,
+            )
+            world.report(
+                customer_id,
+                "tool_call_result",
+                {
+                    "agent_type": "customer",
+                    "hop": hops + 1,
+                    "tool_name": call.name,
+                    "call_id": call.call_id,
+                    "result": result,
+                },
             )
             input_items.append(
                 {
@@ -276,3 +330,15 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
         if local_state.get("table_id"):
             await world.release_table(customer_id)
         world.log(customer_id, "leave", "hop_limit_exceeded")
+    world.report(
+        customer_id,
+        "agent_finished",
+        {
+            "agent_type": "customer",
+            "customer_id": customer_id,
+            "done": local_state["done"],
+            "order_id": local_state.get("order_id"),
+            "table_id": local_state.get("table_id"),
+            "hops": hops,
+        },
+    )

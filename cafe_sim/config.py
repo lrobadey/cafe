@@ -1,6 +1,8 @@
 """Configuration for the OpenAI cafe simulation MVP."""
 
 import os
+from pathlib import Path
+
 from openai import AsyncOpenAI
 
 # Model routing
@@ -9,11 +11,11 @@ CUSTOMER_MODEL = "gpt-5.4-mini"
 
 # OpenAI Responses API controls
 REASONING_EFFORT = "low"
-STORE_RESPONSES = False
+STORE_RESPONSES = True
 
 # Timing (real seconds)
 CUSTOMER_SPAWN_INTERVAL = 30
-BARISTA_POLL_INTERVAL = 2
+BARISTA_POLL_INTERVAL = 5
 CUSTOMER_MAX_WAIT = 90
 SIM_DURATION = 600
 
@@ -34,8 +36,22 @@ MENU = {
 TABLE_IDS = ["t1", "t2", "t3", "t4"]
 
 
+def load_local_env() -> None:
+    """Load simple KEY=VALUE pairs from the repo-local .env file."""
+    env_path = Path(__file__).resolve().parent.parent / ".env"
+    if not env_path.exists():
+        return
+    for line in env_path.read_text().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("\"'"))
+
+
 def build_openai_client() -> AsyncOpenAI:
     """Build OpenAI async client and fail fast if key is missing."""
+    load_local_env()
     if not os.environ.get("OPENAI_API_KEY"):
         raise RuntimeError("OPENAI_API_KEY must be set before running the cafe simulation.")
     return AsyncOpenAI()

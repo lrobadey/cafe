@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cafe Control Room</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="title-block">
+        <h1>Cafe Control Room</h1>
+        <div id="status-line" class="status-line">Connecting...</div>
+      </div>
+      <div class="top-actions">
+        <button id="start-btn">Start</button>
+        <button id="spawn-btn" class="secondary">Spawn</button>
+        <button id="stop-btn" class="ghost">Stop</button>
+        <button id="reset-btn" class="ghost">Reset</button>
+      </div>
+    </header>
+
+    <section class="kpis" id="kpis"></section>
+
+    <main class="workspace">
+      <section class="floor-module">
+        <div class="module-heading">
+          <div>
+            <h2>Floor</h2>
+            <p>Tables, counter, customers, and order movement.</p>
+          </div>
+          <div id="active-customers" class="presence-strip"></div>
+        </div>
+        <div class="floor-plan">
+          <div class="counter-zone">
+            <div class="counter-label">Counter</div>
+            <div id="pipeline" class="pipeline"></div>
+          </div>
+          <div id="tables" class="tables"></div>
+        </div>
+      </section>
+
+      <aside class="side-rail">
+        <section class="events-module">
+          <div class="module-heading compact">
+            <h2>Activity</h2>
+            <span>Live feed</span>
+          </div>
+          <div id="event-log" class="event-log"></div>
+        </section>
+
+        <section class="ops-module">
+          <details>
+            <summary>Menu and settings</summary>
+            <div class="settings-grid">
+              <label>
+                <span>Spawn interval</span>
+                <input id="spawn-interval" type="number" min="1" />
+              </label>
+              <label>
+                <span>Duration</span>
+                <input id="sim-duration" type="number" min="10" />
+              </label>
+              <button id="save-settings-btn" class="ghost">Apply</button>
+            </div>
+            <div id="menu-list" class="menu-list"></div>
+          </details>
+        </section>
+      </aside>
+    </main>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

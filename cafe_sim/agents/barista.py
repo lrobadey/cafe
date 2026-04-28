@@ -123,7 +123,11 @@ async def execute_barista_tool(tool_name: str, tool_input: dict, world: "WorldSt
 
 
 async def run_barista(world: "WorldState"):
+    world.report("barista_alex", "agent_started", {"agent_type": "barista"})
+    cycle = 0
     while True:
+        cycle += 1
+        world.report("barista_alex", "agent_cycle_started", {"agent_type": "barista", "cycle": cycle})
         input_items = [
             {
                 "role": "user",
@@ -145,6 +149,17 @@ async def run_barista(world: "WorldState"):
 
             input_items.extend(response.output)
             function_calls = [item for item in response.output if item.type == "function_call"]
+            world.report(
+                "barista_alex",
+                "model_response",
+                {
+                    "agent_type": "barista",
+                    "cycle": cycle,
+                    "response_id": getattr(response, "id", None),
+                    "function_call_count": len(function_calls),
+                    "output_item_count": len(response.output),
+                },
+            )
 
             if not function_calls:
                 break
@@ -152,7 +167,29 @@ async def run_barista(world: "WorldState"):
             done_cycle = False
             for call in function_calls:
                 tool_input = json.loads(call.arguments or "{}")
+                world.report(
+                    "barista_alex",
+                    "tool_call_requested",
+                    {
+                        "agent_type": "barista",
+                        "cycle": cycle,
+                        "tool_name": call.name,
+                        "call_id": call.call_id,
+                        "arguments": tool_input,
+                    },
+                )
                 result = await execute_barista_tool(call.name, tool_input, world)
+                world.report(
+                    "barista_alex",
+                    "tool_call_result",
+                    {
+                        "agent_type": "barista",
+                        "cycle": cycle,
+                        "tool_name": call.name,
+                        "call_id": call.call_id,
+                        "result": result,
+                    },
+                )
                 input_items.append(
                     {
                         "type": "function_call_output",
