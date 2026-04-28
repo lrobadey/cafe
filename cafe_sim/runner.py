@@ -7,11 +7,16 @@ import uuid
 
 from agents.barista import run_barista
 from agents.customer import run_customer
-from config import CUSTOMER_SPAWN_INTERVAL, MAX_CONCURRENT_CUSTOMERS, SIM_DURATION
+from config import CUSTOMER_SPAWN_INTERVAL, CUSTOMER_SPAWN_JITTER, MAX_CONCURRENT_CUSTOMERS, SIM_DURATION
 from logger import log_event
 from personas import PERSONAS
 from run_report import RunReporter
 from world import WorldState
+
+
+def next_customer_spawn_delay(base_interval: int) -> float:
+    spread = base_interval * CUSTOMER_SPAWN_JITTER
+    return max(1, random.uniform(base_interval - spread, base_interval + spread))
 
 
 async def run_simulation():
@@ -29,6 +34,7 @@ async def run_simulation():
         {
             "mode": "terminal",
             "customer_spawn_interval": CUSTOMER_SPAWN_INTERVAL,
+            "customer_spawn_jitter": CUSTOMER_SPAWN_JITTER,
             "max_concurrent_customers": MAX_CONCURRENT_CUSTOMERS,
             "sim_duration": SIM_DURATION,
             "report_dir": str(reporter.report_dir),
@@ -38,7 +44,7 @@ async def run_simulation():
 
     try:
         while time.time() - start_time < SIM_DURATION:
-            await asyncio.sleep(CUSTOMER_SPAWN_INTERVAL)
+            await asyncio.sleep(next_customer_spawn_delay(CUSTOMER_SPAWN_INTERVAL))
             active_customers = {task for task in active_customers if not task.done()}
 
             if len(active_customers) >= MAX_CONCURRENT_CUSTOMERS:

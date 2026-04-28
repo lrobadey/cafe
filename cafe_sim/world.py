@@ -19,6 +19,7 @@ class WorldState:
             "tables": {tid: {"status": "empty", "customer_id": None} for tid in TABLE_IDS},
             "order_queue": [],
             "event_log": [],
+            "agent_thinking": {},
             "revenue": 0.0,
         }
 
@@ -88,6 +89,40 @@ class WorldState:
                 pipeline[status] += 1
         return pipeline
 
+    def get_agent_thinking(self, active_customers: list[dict], sim_state: dict) -> list[dict]:
+        active_by_id = {customer["customer_id"]: customer for customer in active_customers}
+        agent_rows = []
+        if sim_state.get("running"):
+            agent_rows.append(
+                {
+                    "agent_id": "barista_alex",
+                    "agent_type": "barista",
+                    "display_name": "Alex",
+                }
+            )
+        for customer in active_customers:
+            agent_rows.append(
+                {
+                    "agent_id": customer["customer_id"],
+                    "agent_type": "customer",
+                    "display_name": customer["name"],
+                }
+            )
+
+        thinking = self._state["agent_thinking"]
+        result = []
+        for row in agent_rows:
+            current = thinking.get(row["agent_id"], {})
+            result.append(
+                {
+                    **row,
+                    "summary": current.get("summary"),
+                    "updated_at": current.get("updated_at"),
+                    "persona_mood": active_by_id.get(row["agent_id"], {}).get("mood"),
+                }
+            )
+        return result
+
     def get_recent_events(self, after_index: int = 0, limit: int = 100) -> list[dict]:
         start = max(0, after_index)
         end = start + max(1, limit)
@@ -153,6 +188,7 @@ class WorldState:
             "tables": tables,
             "queue": queue,
             "menu": menu,
+            "agent_thinking": self.get_agent_thinking(active_customers, sim_state),
             "active_customers": [
                 {
                     **dict(customer),
@@ -171,6 +207,21 @@ class WorldState:
     def report(self, source: str, event_type: str, payload: Optional[dict] = None):
         if self.reporter:
             self.reporter.event(source, event_type, payload or {})
+
+    def record_agent_thinking(self, agent_id: str, agent_type: str, display_name: str, summary: str):
+        clean_summary = (summary or "").strip()
+        if not clean_summary:
+            return
+        now = time.time()
+        entry = {
+            "agent_id": agent_id,
+            "agent_type": agent_type,
+            "display_name": display_name,
+            "summary": clean_summary,
+            "updated_at": now,
+        }
+        self._state["agent_thinking"][agent_id] = entry
+        self.report(agent_id, "agent_thinking_summary", entry)
 
     async def claim_table(self, customer_id: str) -> Optional[str]:
         async with self._lock:

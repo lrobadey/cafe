@@ -9,11 +9,16 @@ from config import (
     CUSTOMER_MODEL,
     MAX_CUSTOMER_HOPS,
     REASONING_EFFORT,
+    REASONING_SUMMARY,
     STORE_RESPONSES,
     build_openai_client,
 )
+from reasoning_summary import extract_reasoning_summary_text
 
 client = build_openai_client()
+
+MIN_CUSTOMER_WAIT_SECONDS = 3
+MAX_CUSTOMER_WAIT_SECONDS = 15
 
 CUSTOMER_TOOLS = [
     {
@@ -89,6 +94,25 @@ CUSTOMER_TOOLS = [
     },
     {
         "type": "function",
+        "name": "wait",
+        "description": "Wait briefly in real cafe time before checking the order again.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "integer",
+                    "minimum": MIN_CUSTOMER_WAIT_SECONDS,
+                    "maximum": MAX_CUSTOMER_WAIT_SECONDS,
+                    "description": "How many real seconds to wait before the next action.",
+                }
+            },
+            "required": ["seconds"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "leave",
         "description": "Leave the cafe. Always call this as the final action.",
         "parameters": {
@@ -121,7 +145,7 @@ Use cafe tools to move through your visit:
 3. decide whether to order based on your personality and budget
 4. place_order if you want something
 5. find_seat if available
-6. check_order while waiting
+6. wait briefly, then check_order again while waiting
 7. leave when done or when the cafe is not working for you
 
 Be true to your personality. Keep moving. Always call leave as your final action."""
@@ -192,6 +216,18 @@ async def execute_customer_tool(
             return "You already received your order."
         return f"Unknown order status: {order['status']}."
 
+    if tool_name == "wait":
+        requested_seconds = tool_input.get("seconds", MIN_CUSTOMER_WAIT_SECONDS)
+        wait_seconds = max(MIN_CUSTOMER_WAIT_SECONDS, min(MAX_CUSTOMER_WAIT_SECONDS, int(requested_seconds)))
+        await asyncio.sleep(wait_seconds)
+        waited_total = int(time.time() - state["arrived_at"])
+        if not state.get("order_id"):
+            return (
+                f"You pause for {wait_seconds}s, but you have not ordered yet. "
+                f"You've been in the cafe for {waited_total}s total."
+            )
+        return f"You wait for {wait_seconds}s. You've been in the cafe for {waited_total}s total."
+
     if tool_name == "leave":
         reason = tool_input.get("reason", "satisfied")
         if state.get("table_id"):
@@ -261,8 +297,17 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
             max_output_tokens=512,
             parallel_tool_calls=False,
             store=STORE_RESPONSES,
-            reasoning={"effort": REASONING_EFFORT},
+            reasoning={"effort": REASONING_EFFORT, "summary": REASONING_SUMMARY},
         )
+
+        reasoning_summary = extract_reasoning_summary_text(response)
+        if reasoning_summary:
+            world.record_agent_thinking(
+                customer_id,
+                "customer",
+                persona["name"],
+                reasoning_summary,
+            )
 
         input_items.extend(response.output)
         function_calls = [item for item in response.output if item.type == "function_call"]

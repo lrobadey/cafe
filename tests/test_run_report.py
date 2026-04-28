@@ -43,6 +43,42 @@ class RunReporterTests(unittest.TestCase):
             self.assertEqual([event["event_type"] for event in events], ["world_event", "world_event"])
             self.assertEqual([event["payload"]["action"] for event in events], ["first", "second"])
 
+    def test_agent_thinking_is_reported_without_world_event_log_mutation(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            reporter = RunReporter(report_root=tmp_dir)
+            world = WorldState(reporter=reporter)
+
+            world.record_agent_thinking("cust_test", "customer", "Test Customer", "Considering the menu.")
+
+            self.assertEqual(world.get_recent_events(), [])
+            events = read_jsonl(reporter.events_path)
+            self.assertEqual(len(events), 1)
+            self.assertEqual(events[0]["source"], "cust_test")
+            self.assertEqual(events[0]["event_type"], "agent_thinking_summary")
+            self.assertEqual(events[0]["payload"]["summary"], "Considering the menu.")
+
+    def test_live_snapshot_includes_latest_agent_thinking_for_active_agents(self):
+        world = WorldState()
+        world.record_agent_thinking("barista_alex", "barista", "Alex", "Checking whether the queue is empty.")
+        world.record_agent_thinking("cust_test", "customer", "Test Customer", "Comparing budget to prices.")
+
+        snapshot = world.get_live_snapshot(
+            active_customers=[
+                {
+                    "customer_id": "cust_test",
+                    "name": "Test Customer",
+                    "mood": "curious",
+                    "waiting_seconds": 4,
+                }
+            ],
+            sim_state={"running": True},
+        )
+
+        thinking_by_id = {entry["agent_id"]: entry for entry in snapshot["agent_thinking"]}
+        self.assertEqual(thinking_by_id["barista_alex"]["summary"], "Checking whether the queue is empty.")
+        self.assertEqual(thinking_by_id["cust_test"]["summary"], "Comparing budget to prices.")
+        self.assertEqual(thinking_by_id["cust_test"]["display_name"], "Test Customer")
+
 
 if __name__ == "__main__":
     unittest.main()

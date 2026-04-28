@@ -8,7 +8,7 @@ from typing import Optional
 
 from agents.barista import run_barista
 from agents.customer import run_customer
-from config import CUSTOMER_SPAWN_INTERVAL, MAX_CONCURRENT_CUSTOMERS, SIM_DURATION
+from config import CUSTOMER_SPAWN_INTERVAL, CUSTOMER_SPAWN_JITTER, MAX_CONCURRENT_CUSTOMERS, SIM_DURATION
 from logger import log_event
 from personas import PERSONAS
 from run_report import RunReporter
@@ -19,6 +19,7 @@ class SimulationController:
     def __init__(self):
         self.world = WorldState()
         self.spawn_interval = CUSTOMER_SPAWN_INTERVAL
+        self.spawn_jitter = CUSTOMER_SPAWN_JITTER
         self.sim_duration = SIM_DURATION
         self.max_concurrent_customers = MAX_CONCURRENT_CUSTOMERS
         self.running = False
@@ -46,6 +47,7 @@ class SimulationController:
                 {
                     "mode": "dashboard",
                     "spawn_interval": self.spawn_interval,
+                    "spawn_jitter": self.spawn_jitter,
                     "sim_duration": self.sim_duration,
                     "max_concurrent_customers": self.max_concurrent_customers,
                     "report_dir": str(self._reporter.report_dir),
@@ -120,6 +122,10 @@ class SimulationController:
     def set_spawn_interval(self, value: int):
         self.spawn_interval = max(1, int(value))
 
+    def next_spawn_delay(self) -> float:
+        spread = self.spawn_interval * self.spawn_jitter
+        return max(1, random.uniform(self.spawn_interval - spread, self.spawn_interval + spread))
+
     def set_sim_duration(self, value: int):
         self.sim_duration = max(10, int(value))
 
@@ -133,6 +139,7 @@ class SimulationController:
             "elapsed_seconds": elapsed,
             "spawn_count": self.spawn_count,
             "spawn_interval": self.spawn_interval,
+            "spawn_jitter": self.spawn_jitter,
             "sim_duration": self.sim_duration,
             "max_concurrent_customers": self.max_concurrent_customers,
         }
@@ -153,7 +160,7 @@ class SimulationController:
     async def _run_loop(self):
         try:
             while self.running:
-                await asyncio.sleep(self.spawn_interval)
+                await asyncio.sleep(self.next_spawn_delay())
                 if not self.running:
                     break
                 elapsed = int(time.time() - self.started_at) if self.started_at else 0

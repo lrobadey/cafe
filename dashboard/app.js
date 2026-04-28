@@ -14,6 +14,7 @@ const activeCustomersNode = document.getElementById("active-customers");
 const pipelineNode = document.getElementById("pipeline");
 const menuNode = document.getElementById("menu-list");
 const eventLogNode = document.getElementById("event-log");
+const agentThinkingNode = document.getElementById("agent-thinking");
 
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
@@ -276,6 +277,35 @@ function renderMenu(snapshot) {
   });
 }
 
+function renderAgentThinking(snapshot) {
+  clear(agentThinkingNode);
+  const entries = snapshot.agent_thinking || [];
+  if (!entries.length) {
+    appendText(agentThinkingNode, "div", "empty-state", "No thinking summaries yet.");
+    return;
+  }
+
+  entries.forEach((entry) => {
+    const item = createElement("div", "thinking-item");
+    const head = createElement("div", "row-head");
+    const label = createElement("div");
+    appendText(label, "div", "event-agent", entry.display_name || entry.agent_id);
+    appendText(label, "div", "thinking-role", entry.agent_type);
+    head.appendChild(label);
+    if (entry.updated_at) {
+      appendText(head, "span", "event-time", formatTime(entry.updated_at));
+    }
+    item.appendChild(head);
+    appendText(
+      item,
+      "div",
+      entry.summary ? "thinking-summary" : "thinking-summary muted",
+      entry.summary || "No thinking summary yet."
+    );
+    agentThinkingNode.appendChild(item);
+  });
+}
+
 function renderEvents() {
   clear(eventLogNode);
   if (!state.events.length) {
@@ -316,6 +346,7 @@ function renderSnapshotFromState() {
   renderKpis(state.snapshot);
   renderTables(state.snapshot);
   renderActiveCustomers(state.snapshot);
+  renderAgentThinking(state.snapshot);
   renderPipeline(state.snapshot);
   renderMenu(state.snapshot);
 }

@@ -167,6 +167,7 @@ h1 {
 .floor-module,
 .side-rail,
 .events-module,
+.thinking-module,
 .ops-module {
   min-height: 0;
 }
@@ -406,11 +407,12 @@ h1 {
 
 .side-rail {
   display: grid;
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(160px, 0.55fr) minmax(0, 1fr) auto;
   gap: 10px;
 }
 
 .events-module,
+.thinking-module,
 .ops-module {
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -418,11 +420,17 @@ h1 {
 }
 
 .events-module {
+  min-height: 0;
+}
+
+.events-module,
+.thinking-module {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
   padding: 12px;
 }
 
+.agent-thinking,
 .event-log {
   min-height: 0;
   overflow: auto;
@@ -434,6 +442,30 @@ h1 {
 
 .event-item {
   cursor: pointer;
+}
+
+.thinking-item {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.74);
+  padding: 7px 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.thinking-role {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.thinking-summary {
+  color: var(--ink);
+  font-size: 0.76rem;
+  line-height: 1.32;
 }
 
 .event-item .row-head {

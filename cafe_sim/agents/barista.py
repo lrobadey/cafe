@@ -2,8 +2,18 @@
 
 import asyncio
 import json
+from typing import Optional
 
-from config import BARISTA_MODEL, BARISTA_POLL_INTERVAL, MENU, REASONING_EFFORT, STORE_RESPONSES, build_openai_client
+from config import (
+    BARISTA_MODEL,
+    BARISTA_POLL_INTERVAL,
+    MENU,
+    REASONING_EFFORT,
+    REASONING_SUMMARY,
+    STORE_RESPONSES,
+    build_openai_client,
+)
+from reasoning_summary import extract_reasoning_summary_text
 
 client = build_openai_client()
 
@@ -82,6 +92,85 @@ Work cycle:
 Stay focused. Keep the queue moving."""
 
 
+def create_shift_memory() -> dict:
+    return {
+        "orders_completed": 0,
+        "last_completed_order": None,
+        "last_action": None,
+        "empty_queue_checks": 0,
+        "recent_queue_pressure": "empty",
+    }
+
+
+def render_shift_memory(memory: dict) -> str:
+    if not memory.get("orders_completed") and not memory.get("last_action"):
+        return "Shift memory: no completed orders yet."
+
+    last_completed = memory.get("last_completed_order") or "none yet"
+    last_action = memory.get("last_action") or "none yet"
+    return "\n".join(
+        [
+            "Shift memory:",
+            f"- Orders completed this shift: {memory.get('orders_completed', 0)}",
+            f"- Last completed order: {last_completed}",
+            f"- Recent queue pressure: {memory.get('recent_queue_pressure', 'empty')}",
+            f"- Empty queue checks in a row: {memory.get('empty_queue_checks', 0)}",
+            f"- Last action: {last_action}",
+        ]
+    )
+
+
+def build_barista_cycle_prompt(memory: dict) -> str:
+    return (
+        f"{render_shift_memory(memory)}\n\n"
+        "Check the queue and handle the next order. Or idle if empty."
+    )
+
+
+def _extract_order_id_from_mark_ready_result(result: str) -> Optional[str]:
+    prefix = "Order "
+    suffix = " is ready for pickup."
+    if not result.startswith(prefix) or suffix not in result:
+        return None
+    return result[len(prefix) : result.index(suffix)]
+
+
+def update_shift_memory(memory: dict, tool_name: str, result: str) -> None:
+    if tool_name == "check_queue":
+        if result.startswith("Queue is empty."):
+            memory["empty_queue_checks"] = memory.get("empty_queue_checks", 0) + 1
+            memory["recent_queue_pressure"] = "empty"
+            memory["last_action"] = "checked queue; it was empty"
+            return
+
+        memory["empty_queue_checks"] = 0
+        if result.startswith("1 order(s) waiting:"):
+            memory["recent_queue_pressure"] = "normal"
+        else:
+            memory["recent_queue_pressure"] = "busy"
+        memory["last_action"] = "checked queue; orders were waiting"
+        return
+
+    if tool_name == "mark_ready":
+        order_id = _extract_order_id_from_mark_ready_result(result)
+        if order_id:
+            memory["orders_completed"] = memory.get("orders_completed", 0) + 1
+            memory["last_completed_order"] = order_id
+            memory["last_action"] = f"marked {order_id} ready"
+        return
+
+    if tool_name == "claim_order":
+        memory["last_action"] = result
+        return
+
+    if tool_name == "prepare_order":
+        memory["last_action"] = result
+        return
+
+    if tool_name == "idle":
+        memory["last_action"] = "idled while queue was empty"
+
+
 async def execute_barista_tool(tool_name: str, tool_input: dict, world: "WorldState") -> str:
     if tool_name == "check_queue":
         pending = world.get_pending_unclaimed_orders()
@@ -125,13 +214,14 @@ async def execute_barista_tool(tool_name: str, tool_input: dict, world: "WorldSt
 async def run_barista(world: "WorldState"):
     world.report("barista_alex", "agent_started", {"agent_type": "barista"})
     cycle = 0
+    shift_memory = create_shift_memory()
     while True:
         cycle += 1
         world.report("barista_alex", "agent_cycle_started", {"agent_type": "barista", "cycle": cycle})
         input_items = [
             {
                 "role": "user",
-                "content": "Check the queue and handle the next order. Or idle if empty.",
+                "content": build_barista_cycle_prompt(shift_memory),
             }
         ]
 
@@ -144,8 +234,17 @@ async def run_barista(world: "WorldState"):
                 max_output_tokens=256,
                 parallel_tool_calls=False,
                 store=STORE_RESPONSES,
-                reasoning={"effort": REASONING_EFFORT},
+                reasoning={"effort": REASONING_EFFORT, "summary": REASONING_SUMMARY},
             )
+
+            reasoning_summary = extract_reasoning_summary_text(response)
+            if reasoning_summary:
+                world.record_agent_thinking(
+                    "barista_alex",
+                    "barista",
+                    "Alex",
+                    reasoning_summary,
+                )
 
             input_items.extend(response.output)
             function_calls = [item for item in response.output if item.type == "function_call"]
@@ -179,6 +278,7 @@ async def run_barista(world: "WorldState"):
                     },
                 )
                 result = await execute_barista_tool(call.name, tool_input, world)
+                update_shift_memory(shift_memory, call.name, result)
                 world.report(
                     "barista_alex",
                     "tool_call_result",
