@@ -36,9 +36,13 @@ ORDER_PIPELINE_STATUSES = (
     ORDER_PREPARING,
     ORDER_READY,
     ORDER_DELIVERED,
+    ORDER_ABANDONED,
+    ORDER_STALE,
+    ORDER_FAILED,
 )
 
 OPEN_ORDER_STATUSES = {ORDER_PENDING, ORDER_CLAIMED, ORDER_PREPARING, ORDER_READY}
+UNRESOLVED_ORDER_STATUSES = {ORDER_PENDING, ORDER_CLAIMED, ORDER_PREPARING, ORDER_READY}
 
 
 class WorldState:
@@ -130,6 +134,8 @@ class WorldState:
             "ready_at": None,
             "delivered_at": None,
             "completed_by": None,
+            "closed_at": None,
+            "close_reason": None,
         }
         async with self._lock:
             self._state["order_queue"].append(order)
@@ -141,6 +147,8 @@ class WorldState:
         orders = self._state["order_queue"]
         delivered = [order for order in orders if order["status"] == ORDER_DELIVERED]
         abandoned = [order for order in orders if order["status"] == ORDER_ABANDONED]
+        stale = [order for order in orders if order["status"] == ORDER_STALE]
+        failed = [order for order in orders if order["status"] == ORDER_FAILED]
         ready_waits = [order["ready_at"] - order["placed_at"] for order in orders if order.get("ready_at")]
         delivery_waits = [order["delivered_at"] - order["placed_at"] for order in delivered if order.get("delivered_at")]
         claim_waits = [order["claimed_at"] - order["placed_at"] for order in orders if order.get("claimed_at")]
@@ -155,6 +163,8 @@ class WorldState:
             "orders_created": len(orders),
             "orders_delivered": len(delivered),
             "orders_abandoned": len(abandoned),
+            "orders_stale": len(stale),
+            "orders_failed": len(failed),
             "orders_not_delivered": len(orders) - len(delivered),
             "average_wait_seconds": round(sum(ready_waits) / len(ready_waits), 1) if ready_waits else None,
             "average_total_wait_seconds": round(sum(delivery_waits) / len(delivery_waits), 1) if delivery_waits else None,
@@ -341,6 +351,8 @@ class WorldState:
                 "delivered_at": order["delivered_at"],
                 "barista_id": order["barista_id"],
                 "completed_by": order["completed_by"],
+                "closed_at": order.get("closed_at"),
+                "close_reason": order.get("close_reason"),
             }
             for order in self._state["order_queue"]
         ]
@@ -373,6 +385,174 @@ class WorldState:
             ],
             "event_cursor": len(self._state["event_log"]),
         }
+
+    async def closeout_unresolved(self, reason: str) -> dict:
+        """Resolve any remaining world state at the end of a run."""
+        now = time.time()
+        closed_orders = []
+        released_tables = []
+        cleared_staff = []
+
+        async with self._lock:
+            for order in self._state["order_queue"]:
+                original_status = order["status"]
+                if original_status in {ORDER_PENDING, ORDER_CLAIMED, ORDER_PREPARING}:
+                    order["status"] = ORDER_STALE
+                elif original_status == ORDER_READY:
+                    order["status"] = ORDER_ABANDONED
+                else:
+                    continue
+
+                order["closed_at"] = now
+                order["close_reason"] = reason
+                closed_orders.append(
+                    {
+                        "order_id": order["order_id"],
+                        "customer_id": order["customer_id"],
+                        "from_status": original_status,
+                        "to_status": order["status"],
+                        "close_reason": reason,
+                    }
+                )
+
+            for table_id, table in self._state["tables"].items():
+                if table["status"] != "occupied":
+                    continue
+                released_tables.append(
+                    {
+                        "table_id": table_id,
+                        "customer_id": table["customer_id"],
+                        "close_reason": reason,
+                    }
+                )
+                table["status"] = "empty"
+                table["customer_id"] = None
+
+            for staff_id, staff in self._state["staff"].items():
+                if staff["role"] != "barista":
+                    continue
+                if staff.get("status") != "idle" or staff.get("current_order_id") is not None:
+                    cleared_staff.append(
+                        {
+                            "staff_id": staff_id,
+                            "from_status": staff.get("status"),
+                            "from_order_id": staff.get("current_order_id"),
+                        }
+                    )
+                self._update_staff(
+                    staff_id,
+                    status="idle",
+                    current_order_id=None,
+                    last_action=f"closed shift after {reason}",
+                )
+
+        for order in closed_orders:
+            self.log(
+                "RUNNER",
+                "close_order",
+                f"{order['order_id']} {order['from_status']} -> {order['to_status']} ({reason})",
+            )
+        for table in released_tables:
+            self.log(
+                "RUNNER",
+                "close_table",
+                f"{table['table_id']} released from {table['customer_id']} ({reason})",
+            )
+        for staff in cleared_staff:
+            self.log(
+                "RUNNER",
+                "close_staff",
+                f"{staff['staff_id']} cleared from {staff['from_status']} ({reason})",
+            )
+
+        result = {
+            "reason": reason,
+            "closed_orders": closed_orders,
+            "released_tables": released_tables,
+            "cleared_staff": cleared_staff,
+        }
+        self.report("RUNNER", "closeout_completed", result)
+        return result
+
+    def get_run_alerts(self, closeout: Optional[dict] = None) -> list[dict]:
+        orders = self._state["order_queue"]
+        alerts = []
+        unresolved = [order for order in orders if order["status"] != ORDER_DELIVERED]
+        stale = [order for order in orders if order["status"] == ORDER_STALE]
+        abandoned = [order for order in orders if order["status"] == ORDER_ABANDONED]
+        failed = [order for order in orders if order["status"] == ORDER_FAILED]
+        hop_limit_exits = [
+            event
+            for event in self._state["event_log"]
+            if event["action"] == "leave" and event["detail"] == "hop_limit_exceeded"
+        ]
+        claim_conflicts = self._state["coordination_metrics"]["claim_conflicts"]
+        released_tables = (closeout or {}).get("released_tables", [])
+
+        if unresolved:
+            alerts.append(
+                {
+                    "type": "unresolved_orders",
+                    "severity": "warning",
+                    "count": len(unresolved),
+                    "message": f"{len(unresolved)} order(s) were not delivered before closeout.",
+                }
+            )
+        if stale:
+            alerts.append(
+                {
+                    "type": "stale_orders",
+                    "severity": "warning",
+                    "count": len(stale),
+                    "message": f"{len(stale)} in-progress order(s) were marked stale at closeout.",
+                }
+            )
+        if abandoned:
+            alerts.append(
+                {
+                    "type": "abandoned_orders",
+                    "severity": "warning",
+                    "count": len(abandoned),
+                    "message": f"{len(abandoned)} ready order(s) were abandoned at closeout.",
+                }
+            )
+        if failed:
+            alerts.append(
+                {
+                    "type": "failed_orders",
+                    "severity": "error",
+                    "count": len(failed),
+                    "message": f"{len(failed)} order(s) failed during the run.",
+                }
+            )
+        if released_tables:
+            alerts.append(
+                {
+                    "type": "stale_table_cleanup",
+                    "severity": "info",
+                    "count": len(released_tables),
+                    "message": f"{len(released_tables)} occupied table(s) were released during closeout.",
+                }
+            )
+        if claim_conflicts:
+            alerts.append(
+                {
+                    "type": "claim_conflicts",
+                    "severity": "info",
+                    "count": claim_conflicts,
+                    "message": f"{claim_conflicts} barista claim conflict(s) occurred.",
+                }
+            )
+        if hop_limit_exits:
+            alerts.append(
+                {
+                    "type": "hop_limit_exits",
+                    "severity": "warning",
+                    "count": len(hop_limit_exits),
+                    "message": f"{len(hop_limit_exits)} customer(s) hit the hop limit before leaving cleanly.",
+                }
+            )
+        return alerts
 
     def attach_reporter(self, reporter: Optional[RunReporter]):
         self.reporter = reporter

@@ -58,7 +58,7 @@ async def reset_simulation():
 async def spawn_customer():
     ok = await controller.spawn_customer()
     if not ok:
-        raise HTTPException(status_code=409, detail="At maximum active customer capacity.")
+        raise HTTPException(status_code=409, detail="Simulation is not accepting more customers right now.")
     return {"ok": True}
 
 

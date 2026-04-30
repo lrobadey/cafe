@@ -63,6 +63,43 @@ class ControllerBaristaTaskTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(controller._barista_tasks, {})
             self.assertTrue(all(task.cancelled() for task in tasks))
 
+    async def test_duration_close_enters_closing_then_stopped(self):
+        controller = SimulationController()
+        observed_phases = []
+
+        async def observe_sleep(_seconds):
+            observed_phases.append(controller.phase)
+
+        with (
+            patch("control.RunReporter", return_value=DummyReporter()),
+            patch("control.run_barista", side_effect=idle_until_cancelled),
+            patch("control.SimulationController._run_loop", side_effect=idle_until_cancelled),
+            patch("control.asyncio.sleep", side_effect=observe_sleep),
+        ):
+            await controller.start()
+
+            await controller._begin_closing("duration_complete")
+
+            self.assertIn("closing", observed_phases)
+            self.assertEqual(controller.phase, "stopped")
+            self.assertFalse(controller.running)
+
+    async def test_spawn_customer_is_blocked_outside_running_phase(self):
+        controller = SimulationController()
+
+        spawned = await controller.spawn_customer()
+
+        self.assertFalse(spawned)
+        self.assertEqual(controller.spawn_count, 0)
+
+        controller.running = True
+        controller.phase = "closing"
+
+        spawned = await controller.spawn_customer()
+
+        self.assertFalse(spawned)
+        self.assertEqual(controller.spawn_count, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -48,7 +48,14 @@ class RunReporter:
                 fh.write(json.dumps(entry, sort_keys=True) + "\n")
             return entry
 
-    def close(self, final_status: str, summary: Optional[dict] = None) -> Path:
+    def close(
+        self,
+        final_status: str,
+        summary: Optional[dict] = None,
+        *,
+        final_snapshot: Optional[dict] = None,
+        alerts: Optional[list[dict]] = None,
+    ) -> Path:
         """Write the final summary for this run."""
         with self._lock:
             if self._closed:
@@ -64,6 +71,8 @@ class RunReporter:
                 "report_dir": str(self.report_dir),
                 "events_path": str(self.events_path),
                 "summary": summary or {},
+                "final_snapshot": final_snapshot,
+                "alerts": alerts or [],
             }
             self.summary_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             self._closed = True

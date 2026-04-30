@@ -26,13 +26,17 @@ const saveSettingsBtn = document.getElementById("save-settings-btn");
 const spawnIntervalInput = document.getElementById("spawn-interval");
 const simDurationInput = document.getElementById("sim-duration");
 
-const pipelineOrder = ["pending", "claimed", "preparing", "ready", "delivered"];
+const pipelineOrder = ["pending", "claimed", "preparing", "ready", "delivered", "abandoned", "stale", "failed"];
+const openOrderStatuses = new Set(["pending", "claimed", "preparing", "ready"]);
 const pipelineLabels = {
   pending: "Waiting",
   claimed: "Claimed",
   preparing: "In prep",
   ready: "Ready",
   delivered: "Picked up",
+  abandoned: "Abandoned",
+  stale: "Stale",
+  failed: "Failed",
 };
 
 async function api(path, method = "GET", body = null) {
@@ -172,16 +176,20 @@ function renderStatus() {
   state.notice = null;
   statusLine.className = "status-line";
   const sim = state.snapshot.simulation;
-  statusLine.textContent = sim.running
-    ? `Running - ${sim.elapsed_seconds}s elapsed - ${sim.spawn_count} spawned`
-    : "Stopped - ready for operator input";
+  if (sim.phase === "closing") {
+    statusLine.textContent = `Closing - ${sim.elapsed_seconds}s elapsed - ${sim.spawn_count} spawned`;
+  } else if (sim.running) {
+    statusLine.textContent = `Running - ${sim.elapsed_seconds}s elapsed - ${sim.spawn_count} spawned`;
+  } else {
+    statusLine.textContent = "Stopped - ready for operator input";
+  }
 }
 
 function renderKpis(snapshot) {
   const metrics = snapshot.metrics;
   const sim = snapshot.simulation;
   const occupiedTables = snapshot.tables.filter((table) => table.status === "occupied").length;
-  const openOrders = snapshot.queue.filter((order) => order.status !== "delivered").length;
+  const openOrders = snapshot.queue.filter((order) => openOrderStatuses.has(order.status)).length;
   const staffEntries = Object.entries(snapshot.staff || {});
   const completions = staffEntries
     .map(([staffId, staff]) => `${staff.display_name} ${metrics.orders_completed_by_barista?.[staffId] ?? 0}`)
@@ -218,7 +226,7 @@ function renderKpis(snapshot) {
 function getCustomerOrder(snapshot, customerId) {
   return snapshot.queue
     .filter((order) => order.customer_id === customerId)
-    .find((order) => order.status !== "delivered");
+    .find((order) => openOrderStatuses.has(order.status));
 }
 
 function renderTables(snapshot) {
@@ -364,7 +372,7 @@ function renderOrderRow(order) {
   const item = createElement("div", "list-item order-row");
   const head = createElement("div", "row-head");
   appendText(head, "strong", null, order.customer?.name || order.customer_id);
-  appendText(head, "span", "order-status", pipelineLabels[order.status]);
+  appendText(head, "span", "order-status", pipelineLabels[order.status] || order.status);
   item.appendChild(head);
   appendText(item, "div", "small", order.item_names.join(", "));
   appendText(
@@ -465,6 +473,11 @@ function renderSnapshot(snapshot) {
 
   spawnIntervalInput.value = sim.spawn_interval;
   simDurationInput.value = sim.sim_duration;
+  startBtn.disabled = sim.phase === "running" || sim.phase === "closing";
+  stopBtn.disabled = sim.phase !== "running" && sim.phase !== "closing";
+  spawnBtn.disabled = sim.phase !== "running";
+  resetBtn.disabled = sim.phase === "closing";
+  saveSettingsBtn.disabled = sim.phase === "closing";
   renderSnapshotFromState();
 }
 

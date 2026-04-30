@@ -7,7 +7,13 @@ import uuid
 
 from agents.barista import BARISTA_ROSTER, run_barista
 from agents.customer import run_customer
-from config import CUSTOMER_SPAWN_INTERVAL, CUSTOMER_SPAWN_JITTER, MAX_CONCURRENT_CUSTOMERS, SIM_DURATION
+from config import (
+    CLOSING_GRACE_SECONDS,
+    CUSTOMER_SPAWN_INTERVAL,
+    CUSTOMER_SPAWN_JITTER,
+    MAX_CONCURRENT_CUSTOMERS,
+    SIM_DURATION,
+)
 from logger import log_event
 from personas import PERSONAS
 from run_report import RunReporter
@@ -79,19 +85,50 @@ async def run_simulation():
             log_event("RUNNER", f"Spawning customer #{spawn_count}: {persona['name']} ({persona['mood']})")
             active_customers.add(asyncio.create_task(run_customer(persona, world, customer_id)))
 
+        world.report(
+            "RUNNER",
+            "run_closing",
+            {
+                "reason": "duration_complete",
+                "closing_grace_seconds": CLOSING_GRACE_SECONDS,
+            },
+        )
+        log_event("RUNNER", f"Simulation closing for {CLOSING_GRACE_SECONDS}s.")
+        await asyncio.sleep(CLOSING_GRACE_SECONDS)
+
         for task in barista_tasks:
             task.cancel()
-        if active_customers:
-            await asyncio.gather(*active_customers, return_exceptions=True)
+        active_customers = {task for task in active_customers if not task.done()}
+        for task in active_customers:
+            task.cancel()
+        tasks_to_await = [*barista_tasks, *active_customers]
+        if tasks_to_await:
+            await asyncio.gather(*tasks_to_await, return_exceptions=True)
+        closeout = await world.closeout_unresolved("duration_complete")
 
         summary = world.get_shift_summary()
         run_summary = {
             **summary,
             "customers_spawned": spawn_count,
             "duration_seconds": round(time.time() - start_time, 3),
+            "stop_reason": "duration_complete",
         }
+        final_snapshot = world.get_live_snapshot(
+            active_customers=[],
+            sim_state={
+                "running": False,
+                "phase": "stopped",
+                "elapsed_seconds": int(time.time() - start_time),
+                "spawn_count": spawn_count,
+                "spawn_interval": CUSTOMER_SPAWN_INTERVAL,
+                "spawn_jitter": CUSTOMER_SPAWN_JITTER,
+                "sim_duration": SIM_DURATION,
+                "max_concurrent_customers": MAX_CONCURRENT_CUSTOMERS,
+            },
+        )
+        alerts = world.get_run_alerts(closeout)
         world.report("RUNNER", "run_completed", run_summary)
-        reporter.close("completed", run_summary)
+        reporter.close("completed", run_summary, final_snapshot=final_snapshot, alerts=alerts)
         log_event("RUNNER", f"Simulation complete. {spawn_count} customers visited.")
         log_event("RUNNER", f"Revenue: ${summary['revenue']:.2f}")
         log_event("RUNNER", f"Orders created: {summary['orders_created']}")
@@ -107,20 +144,55 @@ async def run_simulation():
             task.cancel()
         for task in active_customers:
             task.cancel()
+        await asyncio.gather(*barista_tasks, *active_customers, return_exceptions=True)
+        closeout = await world.closeout_unresolved("cancelled")
         summary = {
             **world.get_shift_summary(),
             "customers_spawned": spawn_count,
             "duration_seconds": round(time.time() - start_time, 3),
             "stop_reason": "cancelled",
         }
+        final_snapshot = world.get_live_snapshot(
+            active_customers=[],
+            sim_state={
+                "running": False,
+                "phase": "stopped",
+                "elapsed_seconds": int(time.time() - start_time),
+                "spawn_count": spawn_count,
+                "spawn_interval": CUSTOMER_SPAWN_INTERVAL,
+                "spawn_jitter": CUSTOMER_SPAWN_JITTER,
+                "sim_duration": SIM_DURATION,
+                "max_concurrent_customers": MAX_CONCURRENT_CUSTOMERS,
+            },
+        )
         world.report("RUNNER", "run_stopped", summary)
-        reporter.close("cancelled", summary)
+        reporter.close("cancelled", summary, final_snapshot=final_snapshot, alerts=world.get_run_alerts(closeout))
         raise
     except Exception as exc:
         for task in barista_tasks:
             task.cancel()
         for task in active_customers:
             task.cancel()
+        await asyncio.gather(*barista_tasks, *active_customers, return_exceptions=True)
+        closeout = await world.closeout_unresolved("failed")
+        final_snapshot = world.get_live_snapshot(
+            active_customers=[],
+            sim_state={
+                "running": False,
+                "phase": "stopped",
+                "elapsed_seconds": int(time.time() - start_time),
+                "spawn_count": spawn_count,
+                "spawn_interval": CUSTOMER_SPAWN_INTERVAL,
+                "spawn_jitter": CUSTOMER_SPAWN_JITTER,
+                "sim_duration": SIM_DURATION,
+                "max_concurrent_customers": MAX_CONCURRENT_CUSTOMERS,
+            },
+        )
         world.report("RUNNER", "run_failed", {"error": str(exc)})
-        reporter.close("failed", {"customers_spawned": spawn_count, "error": str(exc)})
+        reporter.close(
+            "failed",
+            {"customers_spawned": spawn_count, "error": str(exc)},
+            final_snapshot=final_snapshot,
+            alerts=world.get_run_alerts(closeout),
+        )
         raise

@@ -83,6 +83,24 @@ class RunReporterTests(unittest.TestCase):
         self.assertEqual(thinking_by_id["cust_test"]["summary"], "Comparing budget to prices.")
         self.assertEqual(thinking_by_id["cust_test"]["display_name"], "Test Customer")
 
+    def test_reporter_accepts_final_snapshot_and_alerts(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            reporter = RunReporter(report_root=tmp_dir)
+            final_snapshot = {"simulation": {"phase": "stopped"}, "queue": []}
+            alerts = [{"type": "unresolved_orders", "count": 1}]
+
+            summary_path = reporter.close(
+                "completed",
+                {"orders_created": 1},
+                final_snapshot=final_snapshot,
+                alerts=alerts,
+            )
+
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            self.assertEqual(summary["summary"], {"orders_created": 1})
+            self.assertEqual(summary["final_snapshot"], final_snapshot)
+            self.assertEqual(summary["alerts"], alerts)
+
 
 if __name__ == "__main__":
     unittest.main()
