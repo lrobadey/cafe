@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import Optional
 
-from agents.barista import run_barista
+from agents.barista import BARISTA_ROSTER, run_barista
 from agents.customer import run_customer
 from config import CUSTOMER_SPAWN_INTERVAL, CUSTOMER_SPAWN_JITTER, MAX_CONCURRENT_CUSTOMERS, SIM_DURATION
 from logger import log_event
@@ -26,7 +26,7 @@ class SimulationController:
         self.started_at = None
         self.spawn_count = 0
         self._active_customers: dict[str, dict] = {}
-        self._barista_task: Optional[asyncio.Task] = None
+        self._barista_tasks: dict[str, asyncio.Task] = {}
         self._runner_task: Optional[asyncio.Task] = None
         self._reporter: Optional[RunReporter] = None
         self._lock = asyncio.Lock()
@@ -39,7 +39,12 @@ class SimulationController:
             self.world.attach_reporter(self._reporter)
             self.running = True
             self.started_at = time.time()
-            self._barista_task = asyncio.create_task(run_barista(self.world))
+            self._barista_tasks = {
+                barista["barista_id"]: asyncio.create_task(
+                    run_barista(self.world, barista["barista_id"], barista["display_name"])
+                )
+                for barista in BARISTA_ROSTER
+            }
             self._runner_task = asyncio.create_task(self._run_loop())
             self.world.report(
                 "RUNNER",
@@ -63,10 +68,10 @@ class SimulationController:
             current_task = asyncio.current_task()
             if self._runner_task and self._runner_task is not current_task:
                 self._runner_task.cancel()
-            if self._barista_task:
-                self._barista_task.cancel()
+            for task in self._barista_tasks.values():
+                task.cancel()
             self._runner_task = None
-            self._barista_task = None
+            self._barista_tasks = {}
             for customer in self._active_customers.values():
                 customer["task"].cancel()
             self._active_customers.clear()

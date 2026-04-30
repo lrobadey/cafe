@@ -1,5 +1,9 @@
+import sys
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cafe_sim"))
 
 from control import SimulationController
 from runner import next_customer_spawn_delay

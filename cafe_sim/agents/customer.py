@@ -210,7 +210,7 @@ async def execute_customer_tool(
             return f"Your order is ready. You pick it up at the counter. Total wait time: {waited}s."
         if order["status"] == "pending":
             return f"Your order is still in the queue. Waited {waited}s so far."
-        if order["status"] == "claimed":
+        if order["status"] in ("claimed", "preparing"):
             return f"The barista is preparing your order now. Waited {waited}s so far."
         if order["status"] == "delivered":
             return "You already received your order."

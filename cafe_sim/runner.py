@@ -5,7 +5,7 @@ import random
 import time
 import uuid
 
-from agents.barista import run_barista
+from agents.barista import BARISTA_ROSTER, run_barista
 from agents.customer import run_customer
 from config import CUSTOMER_SPAWN_INTERVAL, CUSTOMER_SPAWN_JITTER, MAX_CONCURRENT_CUSTOMERS, SIM_DURATION
 from logger import log_event
@@ -23,7 +23,10 @@ async def run_simulation():
     reporter = RunReporter()
     world = WorldState(reporter=reporter)
     active_customers = set()
-    barista_task = asyncio.create_task(run_barista(world))
+    barista_tasks = [
+        asyncio.create_task(run_barista(world, barista["barista_id"], barista["display_name"]))
+        for barista in BARISTA_ROSTER
+    ]
 
     start_time = time.time()
     spawn_count = 0
@@ -40,7 +43,7 @@ async def run_simulation():
             "report_dir": str(reporter.report_dir),
         },
     )
-    log_event("RUNNER", "Simulation started. Barista on shift.")
+    log_event("RUNNER", "Simulation started. Baristas on shift.")
 
     try:
         while time.time() - start_time < SIM_DURATION:
@@ -76,7 +79,8 @@ async def run_simulation():
             log_event("RUNNER", f"Spawning customer #{spawn_count}: {persona['name']} ({persona['mood']})")
             active_customers.add(asyncio.create_task(run_customer(persona, world, customer_id)))
 
-        barista_task.cancel()
+        for task in barista_tasks:
+            task.cancel()
         if active_customers:
             await asyncio.gather(*active_customers, return_exceptions=True)
 
@@ -99,7 +103,8 @@ async def run_simulation():
         log_event("RUNNER", f"Total events logged: {summary['events_logged']}")
         log_event("RUNNER", f"Run report: {reporter.report_dir}")
     except asyncio.CancelledError:
-        barista_task.cancel()
+        for task in barista_tasks:
+            task.cancel()
         for task in active_customers:
             task.cancel()
         summary = {
@@ -112,7 +117,8 @@ async def run_simulation():
         reporter.close("cancelled", summary)
         raise
     except Exception as exc:
-        barista_task.cancel()
+        for task in barista_tasks:
+            task.cancel()
         for task in active_customers:
             task.cancel()
         world.report("RUNNER", "run_failed", {"error": str(exc)})

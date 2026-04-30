@@ -17,6 +17,11 @@ from reasoning_summary import extract_reasoning_summary_text
 
 client = build_openai_client()
 
+BARISTA_ROSTER = (
+    {"barista_id": "barista_alex", "display_name": "Alex"},
+    {"barista_id": "barista_jamie", "display_name": "Jamie"},
+)
+
 BARISTA_TOOLS = [
     {
         "type": "function",
@@ -80,7 +85,9 @@ BARISTA_TOOLS = [
     },
 ]
 
-BARISTA_INSTRUCTIONS = """You are Alex, the barista at a small coffee shop.
+
+def build_barista_instructions(display_name: str) -> str:
+    return f"""You are {display_name}, the barista at a small coffee shop.
 
 Your job is simple: check the order queue, claim one order at a time, prepare it, and mark it ready.
 
@@ -96,7 +103,9 @@ def create_shift_memory() -> dict:
     return {
         "orders_completed": 0,
         "last_completed_order": None,
+        "current_order_id": None,
         "last_action": None,
+        "failed_claims": 0,
         "empty_queue_checks": 0,
         "recent_queue_pressure": "empty",
     }
@@ -113,18 +122,19 @@ def render_shift_memory(memory: dict) -> str:
             "Shift memory:",
             f"- Orders completed this shift: {memory.get('orders_completed', 0)}",
             f"- Last completed order: {last_completed}",
+            f"- Current order: {memory.get('current_order_id') or 'none'}",
             f"- Recent queue pressure: {memory.get('recent_queue_pressure', 'empty')}",
+            f"- Failed claim attempts: {memory.get('failed_claims', 0)}",
             f"- Empty queue checks in a row: {memory.get('empty_queue_checks', 0)}",
             f"- Last action: {last_action}",
         ]
     )
 
 
-def build_barista_cycle_prompt(memory: dict) -> str:
-    return (
-        f"{render_shift_memory(memory)}\n\n"
-        "Check the queue and handle the next order. Or idle if empty."
-    )
+def build_barista_cycle_prompt(memory: dict, world: Optional["WorldState"] = None, barista_id: str = "barista_alex") -> str:
+    if world is not None:
+        return world.get_barista_operational_snapshot(barista_id, memory)
+    return f"{render_shift_memory(memory)}\n\nCheck the queue and handle the next order. Or idle if empty."
 
 
 def _extract_order_id_from_mark_ready_result(result: str) -> Optional[str]:
@@ -156,79 +166,126 @@ def update_shift_memory(memory: dict, tool_name: str, result: str) -> None:
         if order_id:
             memory["orders_completed"] = memory.get("orders_completed", 0) + 1
             memory["last_completed_order"] = order_id
+            memory["current_order_id"] = None
             memory["last_action"] = f"marked {order_id} ready"
         return
 
     if tool_name == "claim_order":
+        if result.startswith("Claimed order "):
+            order_id = result.removeprefix("Claimed order ").split(":", 1)[0]
+            memory["current_order_id"] = order_id
+        elif "already claimed" in result:
+            memory["failed_claims"] = memory.get("failed_claims", 0) + 1
         memory["last_action"] = result
         return
 
     if tool_name == "prepare_order":
+        if result.startswith("Order ") and "cannot" in result:
+            memory["current_order_id"] = None
         memory["last_action"] = result
         return
 
     if tool_name == "idle":
+        memory["current_order_id"] = None
         memory["last_action"] = "idled while queue was empty"
 
 
-async def execute_barista_tool(tool_name: str, tool_input: dict, world: "WorldState") -> str:
+async def execute_barista_tool(
+    barista_id: str,
+    tool_name: str,
+    tool_input: dict,
+    world: "WorldState",
+) -> str:
     if tool_name == "check_queue":
         pending = world.get_pending_unclaimed_orders()
         if not pending:
+            await world.update_staff_action(
+                barista_id,
+                status="idle",
+                clear_current_order=True,
+                last_action="checked queue; it was empty",
+            )
             return "Queue is empty. Nothing to do right now."
         lines = []
         for order in pending:
             items_str = ", ".join(order["items"])
             lines.append(f"- Order {order['order_id']}: {items_str} for customer {order['customer_id']}")
+        await world.update_staff_action(
+            barista_id,
+            last_action="checked queue; orders were waiting",
+        )
         return f"{len(pending)} order(s) waiting:\n" + "\n".join(lines)
 
     if tool_name == "claim_order":
         order_id = tool_input["order_id"]
-        success = await world.claim_order("barista_alex", order_id)
+        success = await world.claim_order(barista_id, order_id)
         if success:
             order = world.get_order(order_id)
             return f"Claimed order {order_id}: {', '.join(order['items'])}. Start preparing it."
-        return f"Order {order_id} was already claimed. Check the queue again."
+        order = world.get_order(order_id)
+        if not order:
+            return f"Order {order_id} was not found. Check the queue again."
+        owner_id = order.get("barista_id")
+        staff = world.get_staff()
+        owner_name = staff.get(owner_id, {}).get("display_name", owner_id or "another worker")
+        if owner_id:
+            return f"Order {order_id} is already claimed by {owner_name}. Check the queue for another pending order."
+        return f"Order {order_id} is {order['status']} and cannot be claimed. Check the queue again."
 
     if tool_name == "prepare_order":
         order_id = tool_input["order_id"]
-        order = world.get_order(order_id)
-        if not order:
-            return f"Order {order_id} not found."
+        prepare_result = await world.prepare_order(barista_id, order_id)
+        if not prepare_result["ok"]:
+            return prepare_result["message"]
+        order = prepare_result["order"]
         prep_time = max(MENU.get(item, {}).get("prep_seconds", 5) for item in order["items"])
         await asyncio.sleep(prep_time)
         return f"Prepared order {order_id} in {prep_time}s. Mark it ready."
 
     if tool_name == "mark_ready":
         order_id = tool_input["order_id"]
-        await world.mark_order_ready(order_id)
-        return f"Order {order_id} is ready for pickup. Check the queue for more orders."
+        ready_result = await world.mark_order_ready(order_id, barista_id=barista_id)
+        if not ready_result["ok"]:
+            return ready_result["message"]
+        return f"{ready_result['message']} Check the queue for more orders."
 
     if tool_name == "idle":
+        await world.record_idle_check(barista_id)
+        await world.update_staff_action(
+            barista_id,
+            status="idle",
+            clear_current_order=True,
+            last_action="idled while queue was empty",
+        )
         await asyncio.sleep(BARISTA_POLL_INTERVAL)
         return "Break done. Check the queue again."
 
     return f"Unknown tool: {tool_name}"
 
 
-async def run_barista(world: "WorldState"):
-    world.report("barista_alex", "agent_started", {"agent_type": "barista"})
+async def run_barista(
+    world: "WorldState",
+    barista_id: str = "barista_alex",
+    display_name: str = "Alex",
+):
+    world.report(barista_id, "agent_started", {"agent_type": "barista"})
     cycle = 0
     shift_memory = create_shift_memory()
+    instructions = build_barista_instructions(display_name)
     while True:
         cycle += 1
-        world.report("barista_alex", "agent_cycle_started", {"agent_type": "barista", "cycle": cycle})
+        world.report(barista_id, "agent_cycle_started", {"agent_type": "barista", "cycle": cycle})
         input_items = [
             {
                 "role": "user",
-                "content": build_barista_cycle_prompt(shift_memory),
+                "content": build_barista_cycle_prompt(shift_memory, world, barista_id),
             }
         ]
 
         for _ in range(6):
             response = await client.responses.create(
                 model=BARISTA_MODEL,
-                instructions=BARISTA_INSTRUCTIONS,
+                instructions=instructions,
                 input=input_items,
                 tools=BARISTA_TOOLS,
                 max_output_tokens=256,
@@ -240,16 +297,16 @@ async def run_barista(world: "WorldState"):
             reasoning_summary = extract_reasoning_summary_text(response)
             if reasoning_summary:
                 world.record_agent_thinking(
-                    "barista_alex",
+                    barista_id,
                     "barista",
-                    "Alex",
+                    display_name,
                     reasoning_summary,
                 )
 
             input_items.extend(response.output)
             function_calls = [item for item in response.output if item.type == "function_call"]
             world.report(
-                "barista_alex",
+                barista_id,
                 "model_response",
                 {
                     "agent_type": "barista",
@@ -267,7 +324,7 @@ async def run_barista(world: "WorldState"):
             for call in function_calls:
                 tool_input = json.loads(call.arguments or "{}")
                 world.report(
-                    "barista_alex",
+                    barista_id,
                     "tool_call_requested",
                     {
                         "agent_type": "barista",
@@ -277,10 +334,10 @@ async def run_barista(world: "WorldState"):
                         "arguments": tool_input,
                     },
                 )
-                result = await execute_barista_tool(call.name, tool_input, world)
+                result = await execute_barista_tool(barista_id, call.name, tool_input, world)
                 update_shift_memory(shift_memory, call.name, result)
                 world.report(
-                    "barista_alex",
+                    barista_id,
                     "tool_call_result",
                     {
                         "agent_type": "barista",

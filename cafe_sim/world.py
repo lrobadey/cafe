@@ -10,6 +10,37 @@ from logger import log_event
 from run_report import RunReporter
 
 
+ORDER_PENDING = "pending"
+ORDER_CLAIMED = "claimed"
+ORDER_PREPARING = "preparing"
+ORDER_READY = "ready"
+ORDER_DELIVERED = "delivered"
+ORDER_ABANDONED = "abandoned"
+ORDER_FAILED = "failed"
+ORDER_STALE = "stale"
+
+ORDER_STATUSES = (
+    ORDER_PENDING,
+    ORDER_CLAIMED,
+    ORDER_PREPARING,
+    ORDER_READY,
+    ORDER_DELIVERED,
+    ORDER_ABANDONED,
+    ORDER_FAILED,
+    ORDER_STALE,
+)
+
+ORDER_PIPELINE_STATUSES = (
+    ORDER_PENDING,
+    ORDER_CLAIMED,
+    ORDER_PREPARING,
+    ORDER_READY,
+    ORDER_DELIVERED,
+)
+
+OPEN_ORDER_STATUSES = {ORDER_PENDING, ORDER_CLAIMED, ORDER_PREPARING, ORDER_READY}
+
+
 class WorldState:
     def __init__(self, reporter: Optional[RunReporter] = None):
         self._lock = asyncio.Lock()
@@ -20,6 +51,36 @@ class WorldState:
             "order_queue": [],
             "event_log": [],
             "agent_thinking": {},
+            "staff": {
+                "barista_alex": {
+                    "display_name": "Alex",
+                    "role": "barista",
+                    "status": "idle",
+                    "current_order_id": None,
+                    "orders_completed": 0,
+                    "last_action": None,
+                },
+                "barista_jamie": {
+                    "display_name": "Jamie",
+                    "role": "barista",
+                    "status": "idle",
+                    "current_order_id": None,
+                    "orders_completed": 0,
+                    "last_action": None,
+                },
+            },
+            "coordination_metrics": {
+                "claim_conflicts": 0,
+                "claim_conflicts_by_barista": {
+                    "barista_alex": 0,
+                    "barista_jamie": 0,
+                },
+                "claim_conflict_pairs": {},
+                "idle_checks_by_barista": {
+                    "barista_alex": 0,
+                    "barista_jamie": 0,
+                },
+            },
             "revenue": 0.0,
         }
 
@@ -39,10 +100,19 @@ class WorldState:
         return None
 
     def get_pending_unclaimed_orders(self) -> list[dict]:
-        return [dict(order) for order in self._state["order_queue"] if order["status"] == "pending"]
+        return [dict(order) for order in self._state["order_queue"] if order["status"] == ORDER_PENDING]
+
+    def get_staff(self) -> dict:
+        return {staff_id: dict(staff) for staff_id, staff in self._state["staff"].items()}
+
+    def _update_staff(self, staff_id: str, **updates):
+        staff = self._state["staff"].get(staff_id)
+        if not staff:
+            return
+        staff.update(updates)
 
     def queue_length(self) -> int:
-        return len([order for order in self._state["order_queue"] if order["status"] != "delivered"])
+        return len([order for order in self._state["order_queue"] if order["status"] in OPEN_ORDER_STATUSES])
 
     async def place_order(self, customer_id: str, items: list[str]) -> str:
         order_id = f"ord_{uuid.uuid4().hex[:6]}"
@@ -52,10 +122,14 @@ class WorldState:
             "customer_id": customer_id,
             "items": items,
             "total_price": total_price,
-            "status": "pending",
+            "status": ORDER_PENDING,
             "barista_id": None,
             "placed_at": time.time(),
+            "claimed_at": None,
+            "preparing_at": None,
             "ready_at": None,
+            "delivered_at": None,
+            "completed_by": None,
         }
         async with self._lock:
             self._state["order_queue"].append(order)
@@ -65,41 +139,135 @@ class WorldState:
 
     def get_shift_summary(self) -> dict:
         orders = self._state["order_queue"]
-        delivered = [order for order in orders if order["status"] == "delivered"]
-        waits = [
-            order["ready_at"] - order["placed_at"]
+        delivered = [order for order in orders if order["status"] == ORDER_DELIVERED]
+        abandoned = [order for order in orders if order["status"] == ORDER_ABANDONED]
+        ready_waits = [order["ready_at"] - order["placed_at"] for order in orders if order.get("ready_at")]
+        delivery_waits = [order["delivered_at"] - order["placed_at"] for order in delivered if order.get("delivered_at")]
+        claim_waits = [order["claimed_at"] - order["placed_at"] for order in orders if order.get("claimed_at")]
+        prep_durations = [
+            order["ready_at"] - order["preparing_at"]
             for order in orders
-            if order.get("ready_at") is not None
+            if order.get("ready_at") and order.get("preparing_at")
         ]
 
         return {
             "revenue": round(self._state["revenue"], 2),
             "orders_created": len(orders),
             "orders_delivered": len(delivered),
+            "orders_abandoned": len(abandoned),
             "orders_not_delivered": len(orders) - len(delivered),
-            "average_wait_seconds": round(sum(waits) / len(waits), 1) if waits else None,
+            "average_wait_seconds": round(sum(ready_waits) / len(ready_waits), 1) if ready_waits else None,
+            "average_total_wait_seconds": round(sum(delivery_waits) / len(delivery_waits), 1) if delivery_waits else None,
+            "average_claim_wait_seconds": round(sum(claim_waits) / len(claim_waits), 1) if claim_waits else None,
+            "average_prep_seconds": round(sum(prep_durations) / len(prep_durations), 1) if prep_durations else None,
             "events_logged": len(self._state["event_log"]),
+            "claim_conflicts": self._state["coordination_metrics"]["claim_conflicts"],
+            "claim_conflicts_by_barista": dict(self._state["coordination_metrics"]["claim_conflicts_by_barista"]),
+            "claim_conflict_pairs": dict(self._state["coordination_metrics"]["claim_conflict_pairs"]),
+            "orders_completed_by_barista": {
+                staff_id: staff["orders_completed"]
+                for staff_id, staff in self._state["staff"].items()
+                if staff["role"] == "barista"
+            },
+            "idle_checks_by_barista": dict(self._state["coordination_metrics"]["idle_checks_by_barista"]),
         }
 
     def get_order_pipeline(self) -> dict:
-        pipeline = {"pending": 0, "claimed": 0, "ready": 0, "delivered": 0}
+        pipeline = {status: 0 for status in ORDER_PIPELINE_STATUSES}
         for order in self._state["order_queue"]:
             status = order["status"]
             if status in pipeline:
                 pipeline[status] += 1
         return pipeline
 
+    def get_barista_operational_snapshot(self, barista_id: str, memory: dict) -> str:
+        staff = self._state["staff"].get(barista_id, {})
+        display_name = staff.get("display_name", barista_id)
+        other_staff = [
+            (staff_id, member)
+            for staff_id, member in self._state["staff"].items()
+            if staff_id != barista_id and member.get("role") == "barista"
+        ]
+        pending = [order for order in self._state["order_queue"] if order["status"] == ORDER_PENDING]
+        claimed_by_you = [
+            order
+            for order in self._state["order_queue"]
+            if order["barista_id"] == barista_id and order["status"] in {ORDER_CLAIMED, ORDER_PREPARING}
+        ]
+        claimed_by_others = [
+            order
+            for order in self._state["order_queue"]
+            if order["barista_id"] not in (None, barista_id)
+            and order["status"] in {ORDER_CLAIMED, ORDER_PREPARING}
+        ]
+        ready = [order for order in self._state["order_queue"] if order["status"] == ORDER_READY]
+        now = time.time()
+
+        if len(pending) >= 3:
+            queue_pressure = "busy"
+        elif pending:
+            queue_pressure = "normal"
+        else:
+            queue_pressure = "empty"
+
+        memory["recent_queue_pressure"] = queue_pressure
+        other_lines = []
+        for other_id, other in other_staff:
+            other_lines.append(
+                f"- Claimed by {other.get('display_name', other_id)}: "
+                f"{sum(1 for order in claimed_by_others if order['barista_id'] == other_id)}"
+            )
+        pending_lines = []
+        for order in pending[:6]:
+            waited = int(now - order["placed_at"])
+            items = ", ".join(order["items"])
+            pending_lines.append(f"- {order['order_id']}: {items} for {order['customer_id']}, waiting {waited}s")
+
+        if not pending_lines:
+            pending_lines.append("- none")
+
+        current_order = staff.get("current_order_id") or memory.get("current_order_id") or "none"
+        last_action = memory.get("last_action") or staff.get("last_action") or "none"
+
+        return "\n".join(
+            [
+                f"You are {display_name}.",
+                "",
+                "Shift memory:",
+                f"- Orders completed this shift: {memory.get('orders_completed', 0)}",
+                f"- Current order: {current_order}",
+                f"- Recent queue pressure: {queue_pressure}",
+                f"- Failed claim attempts: {memory.get('failed_claims', 0)}",
+                f"- Empty queue checks in a row: {memory.get('empty_queue_checks', 0)}",
+                f"- Last action: {last_action}",
+                "",
+                "Queue status:",
+                f"- Pending orders: {len(pending)}",
+                f"- Claimed by you: {len(claimed_by_you)}",
+                *other_lines,
+                f"- Ready orders: {len(ready)}",
+                "",
+                "Pending orders:",
+                *pending_lines,
+                "",
+                "Instruction:",
+                "Check the queue and take the next appropriate action.",
+            ]
+        )
+
     def get_agent_thinking(self, active_customers: list[dict], sim_state: dict) -> list[dict]:
         active_by_id = {customer["customer_id"]: customer for customer in active_customers}
         agent_rows = []
         if sim_state.get("running"):
-            agent_rows.append(
-                {
-                    "agent_id": "barista_alex",
-                    "agent_type": "barista",
-                    "display_name": "Alex",
-                }
-            )
+            for staff_id, staff in self._state["staff"].items():
+                if staff["role"] == "barista":
+                    agent_rows.append(
+                        {
+                            "agent_id": staff_id,
+                            "agent_type": "barista",
+                            "display_name": staff["display_name"],
+                        }
+                    )
         for customer in active_customers:
             agent_rows.append(
                 {
@@ -145,7 +313,7 @@ class WorldState:
         }
         order_by_customer = {}
         for order in self._state["order_queue"]:
-            if order["status"] != "delivered":
+            if order["status"] in OPEN_ORDER_STATUSES:
                 order_by_customer[order["customer_id"]] = order
 
         tables = [
@@ -167,8 +335,12 @@ class WorldState:
                 "status": order["status"],
                 "total_price": order["total_price"],
                 "placed_at": order["placed_at"],
+                "claimed_at": order["claimed_at"],
+                "preparing_at": order["preparing_at"],
                 "ready_at": order["ready_at"],
+                "delivered_at": order["delivered_at"],
                 "barista_id": order["barista_id"],
+                "completed_by": order["completed_by"],
             }
             for order in self._state["order_queue"]
         ]
@@ -188,6 +360,7 @@ class WorldState:
             "tables": tables,
             "queue": queue,
             "menu": menu,
+            "staff": self.get_staff(),
             "agent_thinking": self.get_agent_thinking(active_customers, sim_state),
             "active_customers": [
                 {
@@ -244,26 +417,129 @@ class WorldState:
     async def claim_order(self, barista_id: str, order_id: str) -> bool:
         async with self._lock:
             for order in self._state["order_queue"]:
-                if order["order_id"] == order_id and order["status"] == "pending":
-                    order["status"] = "claimed"
-                    order["barista_id"] = barista_id
-                    self.log(barista_id, "claim_order", order_id)
-                    return True
+                if order["order_id"] != order_id:
+                    continue
+                if order["status"] != ORDER_PENDING:
+                    self._state["coordination_metrics"]["claim_conflicts"] += 1
+                    conflicts_by_barista = self._state["coordination_metrics"]["claim_conflicts_by_barista"]
+                    conflicts_by_barista[barista_id] = conflicts_by_barista.get(barista_id, 0) + 1
+                    owner_id = order.get("barista_id") or "none"
+                    pair_key = f"{barista_id}->{owner_id}"
+                    pairs = self._state["coordination_metrics"]["claim_conflict_pairs"]
+                    pairs[pair_key] = pairs.get(pair_key, 0) + 1
+                    owner_display = self._state["staff"].get(owner_id, {}).get("display_name", owner_id)
+                    self._update_staff(
+                        barista_id,
+                        last_action=f"failed to claim {order_id}; already claimed by {owner_display}",
+                    )
+                    return False
+                order["status"] = ORDER_CLAIMED
+                order["barista_id"] = barista_id
+                order["claimed_at"] = time.time()
+                self._update_staff(
+                    barista_id,
+                    status="claimed",
+                    current_order_id=order_id,
+                    last_action=f"claimed {order_id}",
+                )
+                self.log(barista_id, "claim_order", order_id)
+                return True
         return False
 
-    async def mark_order_ready(self, order_id: str):
+    async def record_idle_check(self, barista_id: str):
+        async with self._lock:
+            idle_checks = self._state["coordination_metrics"]["idle_checks_by_barista"]
+            idle_checks[barista_id] = idle_checks.get(barista_id, 0) + 1
+
+    async def prepare_order(self, barista_id: str, order_id: str) -> dict:
         async with self._lock:
             for order in self._state["order_queue"]:
-                if order["order_id"] == order_id:
-                    order["status"] = "ready"
-                    order["ready_at"] = time.time()
-        self.log("barista", "mark_ready", order_id)
+                if order["order_id"] != order_id:
+                    continue
+                if order["status"] == ORDER_PENDING:
+                    return {"ok": False, "message": f"Order {order_id} must be claimed before preparing."}
+                if order["status"] != ORDER_CLAIMED:
+                    return {"ok": False, "message": f"Order {order_id} is {order['status']} and cannot be prepared."}
+                if order["barista_id"] != barista_id:
+                    owner_display = self._state["staff"].get(order["barista_id"], {}).get("display_name", order["barista_id"])
+                    return {
+                        "ok": False,
+                        "message": f"Order {order_id} is claimed by {owner_display}. Check the queue for your order.",
+                    }
+                order["status"] = ORDER_PREPARING
+                order["preparing_at"] = time.time()
+                self._update_staff(
+                    barista_id,
+                    status="preparing",
+                    current_order_id=order_id,
+                    last_action=f"preparing {order_id}",
+                )
+                return {"ok": True, "message": f"Preparing order {order_id}.", "order": dict(order)}
+        return {"ok": False, "message": f"Order {order_id} not found."}
+
+    async def mark_order_ready(self, order_id: str, barista_id: Optional[str] = None) -> dict:
+        ready_by = barista_id or "barista"
+        async with self._lock:
+            for order in self._state["order_queue"]:
+                if order["order_id"] != order_id:
+                    continue
+                if order["status"] == ORDER_PENDING:
+                    return {"ok": False, "message": f"Order {order_id} must be claimed before it can be marked ready."}
+                if order["status"] == ORDER_CLAIMED:
+                    return {"ok": False, "message": f"Order {order_id} must be prepared before it can be marked ready."}
+                if order["status"] != ORDER_PREPARING:
+                    return {"ok": False, "message": f"Order {order_id} is {order['status']} and cannot be marked ready."}
+                if order["barista_id"] != barista_id:
+                    owner_display = self._state["staff"].get(order["barista_id"], {}).get("display_name", order["barista_id"])
+                    return {
+                        "ok": False,
+                        "message": f"Order {order_id} is claimed by {owner_display}. Only that barista can mark it ready.",
+                    }
+                order["status"] = ORDER_READY
+                order["ready_at"] = time.time()
+                order["completed_by"] = barista_id
+                staff = self._state["staff"].get(barista_id)
+                completed = staff.get("orders_completed", 0) + 1 if staff else 0
+                self._update_staff(
+                    barista_id,
+                    status="idle",
+                    current_order_id=None,
+                    orders_completed=completed,
+                    last_action=f"marked {order_id} ready",
+                )
+                self.log(ready_by, "mark_ready", order_id)
+                return {"ok": True, "message": f"Order {order_id} is ready for pickup."}
+        return {"ok": False, "message": f"Order {order_id} not found."}
+
+    async def update_staff_action(
+        self,
+        barista_id: str,
+        *,
+        status: Optional[str] = None,
+        current_order_id: Optional[str] = None,
+        clear_current_order: bool = False,
+        last_action: Optional[str] = None,
+    ):
+        updates = {}
+        if status is not None:
+            updates["status"] = status
+        if current_order_id is not None:
+            updates["current_order_id"] = current_order_id
+        if clear_current_order:
+            updates["current_order_id"] = None
+        if last_action is not None:
+            updates["last_action"] = last_action
+        if not updates:
+            return
+        async with self._lock:
+            self._update_staff(barista_id, **updates)
 
     async def mark_order_delivered(self, order_id: str):
         async with self._lock:
             for order in self._state["order_queue"]:
                 if order["order_id"] == order_id:
-                    order["status"] = "delivered"
+                    order["status"] = ORDER_DELIVERED
+                    order["delivered_at"] = time.time()
         self.log("barista", "delivered", order_id)
 
     def log(self, agent_id: str, action: str, detail: str):

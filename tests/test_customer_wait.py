@@ -1,7 +1,11 @@
 import asyncio
+import sys
 import time
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cafe_sim"))
 
 from agents.customer import execute_customer_tool
 from world import WorldState
@@ -48,7 +52,9 @@ class CustomerWaitToolTests(unittest.IsolatedAsyncioTestCase):
     async def test_wait_does_not_deliver_ready_order(self):
         world = WorldState()
         order_id = await world.place_order("cust_test", ["espresso"])
-        await world.mark_order_ready(order_id)
+        await world.claim_order("barista_alex", order_id)
+        await world.prepare_order("barista_alex", order_id)
+        await world.mark_order_ready(order_id, barista_id="barista_alex")
         state = {
             "order_id": order_id,
             "table_id": None,

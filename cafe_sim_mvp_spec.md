@@ -1,5 +1,7 @@
 # OpenAI Cafe Simulation — MVP Spec
 
+> Status note: this is the original single-barista MVP spec. The live implementation has moved to CafeLab v0.2: two active baristas, one shared queue, staff state, dashboard staff visibility, and coordination metrics. Use `cafe_sim/NEXT_STEPS.md` for the current implementation status.
+
 **Version:** 0.2  
 **Scope:** Tightest buildable OpenAI-specific version. No manager. No event bus. No Redis. No frontend. One barista. One world state dict. Customers spawn on a fixed timer.  
 **Goal:** A terminal-observable, genuinely emergent multi-agent simulation that runs in real time using the OpenAI Responses API.

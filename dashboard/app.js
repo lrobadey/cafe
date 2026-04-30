@@ -5,6 +5,7 @@ const state = {
   notice: null,
   noticeUntil: 0,
   expanded: new Set(),
+  seenThoughts: new Set(),
 };
 
 const statusLine = document.getElementById("status-line");
@@ -14,7 +15,8 @@ const activeCustomersNode = document.getElementById("active-customers");
 const pipelineNode = document.getElementById("pipeline");
 const menuNode = document.getElementById("menu-list");
 const eventLogNode = document.getElementById("event-log");
-const agentThinkingNode = document.getElementById("agent-thinking");
+const counterLabelNode = document.getElementById("counter-label");
+const staffListNode = document.getElementById("staff-list");
 
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
@@ -24,10 +26,11 @@ const saveSettingsBtn = document.getElementById("save-settings-btn");
 const spawnIntervalInput = document.getElementById("spawn-interval");
 const simDurationInput = document.getElementById("sim-duration");
 
-const pipelineOrder = ["pending", "claimed", "ready", "delivered"];
+const pipelineOrder = ["pending", "claimed", "preparing", "ready", "delivered"];
 const pipelineLabels = {
   pending: "Waiting",
-  claimed: "In prep",
+  claimed: "Claimed",
+  preparing: "In prep",
   ready: "Ready",
   delivered: "Picked up",
 };
@@ -81,6 +84,53 @@ function formatMoney(value) {
   return `$${Number(value || 0).toFixed(2)}`;
 }
 
+function clampText(text, maxLength = 92) {
+  const clean = String(text || "").replace(/\s+/g, " ").trim();
+  if (clean.length <= maxLength) {
+    return clean;
+  }
+  return `${clean.slice(0, maxLength - 3).trim()}...`;
+}
+
+function extractBoldThought(summary) {
+  const matches = [];
+  const markdownBoldPattern = /(?:\*\*|__)([^*_][\s\S]*?[^*_]|[^*_])(?:\*\*|__)/g;
+  let match = markdownBoldPattern.exec(summary || "");
+
+  while (match) {
+    const thought = match[1].replace(/[`*_]/g, "").replace(/\s+/g, " ").trim();
+    if (thought) {
+      matches.push(thought.replace(/:$/, ""));
+    }
+    match = markdownBoldPattern.exec(summary || "");
+  }
+
+  return clampText([...new Set(matches)].slice(0, 2).join(" / "));
+}
+
+function getThinkingByAgent(snapshot) {
+  return new Map((snapshot.agent_thinking || []).map((entry) => [entry.agent_id, entry]));
+}
+
+function appendThoughtBubble(parent, summary, className = "", key = "") {
+  const thought = extractBoldThought(summary);
+  if (!thought) {
+    return null;
+  }
+
+  const fingerprint = `${key}:${thought}`;
+  const isSettled = state.seenThoughts.has(fingerprint);
+  state.seenThoughts.add(fingerprint);
+  const bubble = createElement(
+    "div",
+    `thought-bubble${className ? ` ${className}` : ""}${isSettled ? " is-settled" : ""}`,
+    thought
+  );
+  bubble.title = thought;
+  parent.appendChild(bubble);
+  return bubble;
+}
+
 function toggleExpanded(key) {
   if (state.expanded.has(key)) {
     state.expanded.delete(key);
@@ -132,13 +182,28 @@ function renderKpis(snapshot) {
   const sim = snapshot.simulation;
   const occupiedTables = snapshot.tables.filter((table) => table.status === "occupied").length;
   const openOrders = snapshot.queue.filter((order) => order.status !== "delivered").length;
+  const staffEntries = Object.entries(snapshot.staff || {});
+  const completions = staffEntries
+    .map(([staffId, staff]) => `${staff.display_name} ${metrics.orders_completed_by_barista?.[staffId] ?? 0}`)
+    .join(" / ");
+  const idleChecks = staffEntries
+    .map(([staffId, staff]) => `${staff.display_name} ${metrics.idle_checks_by_barista?.[staffId] ?? 0}`)
+    .join(" / ");
+  const conflictsByStaff = staffEntries
+    .map(([staffId, staff]) => `${staff.display_name} ${metrics.claim_conflicts_by_barista?.[staffId] ?? 0}`)
+    .join(" / ");
   const chips = [
     ["Revenue", formatMoney(metrics.revenue)],
     ["Open orders", String(openOrders)],
     ["Tables", `${occupiedTables}/${snapshot.tables.length}`],
     ["Customers", String(snapshot.active_customers.length)],
     ["Elapsed", `${sim.elapsed_seconds}s`],
-    ["Avg prep", metrics.average_wait_seconds == null ? "n/a" : `${metrics.average_wait_seconds}s`],
+    ["Avg ready", metrics.average_wait_seconds == null ? "n/a" : `${metrics.average_wait_seconds}s`],
+    ["Avg prep", metrics.average_prep_seconds == null ? "n/a" : `${metrics.average_prep_seconds}s`],
+    ["Conflicts", String(metrics.claim_conflicts ?? 0)],
+    ["Conflict split", conflictsByStaff || "n/a"],
+    ["Completed", completions || "n/a"],
+    ["Idle checks", idleChecks || "n/a"],
   ];
 
   clear(kpisNode);
@@ -158,6 +223,7 @@ function getCustomerOrder(snapshot, customerId) {
 
 function renderTables(snapshot) {
   clear(tablesNode);
+  const thinkingByAgent = getThinkingByAgent(snapshot);
   snapshot.tables.forEach((table) => {
     const tableNode = createElement("div", `table ${table.status}`);
     const customer = table.customer;
@@ -169,7 +235,15 @@ function renderTables(snapshot) {
 
     const body = createElement("div", "table-body");
     if (customer) {
-      appendText(body, "div", "person-name", customer.name);
+      const nameRow = createElement("div", "person-thinking-row");
+      appendText(nameRow, "div", "person-name", customer.name);
+      appendThoughtBubble(
+        nameRow,
+        thinkingByAgent.get(customer.customer_id)?.summary,
+        "table-thought",
+        `table:${customer.customer_id}`
+      );
+      body.appendChild(nameRow);
       appendText(body, "div", "small muted", `${customer.mood} - waiting ${customer.waiting_seconds}s`);
       if (order) {
         appendText(body, "div", "small", `${pipelineLabels[order.status]}: ${order.item_names.join(", ")}`);
@@ -187,6 +261,81 @@ function renderTables(snapshot) {
   });
 }
 
+function renderCounterThinking(snapshot) {
+  if (!counterLabelNode) {
+    return;
+  }
+
+  counterLabelNode.replaceChildren();
+  appendText(counterLabelNode, "span", "counter-title", "Counter");
+}
+
+function createStaffRow(staffId) {
+  const row = createElement("div", "staff-row");
+  row.dataset.staffId = staffId;
+
+  const head = createElement("div", "row-head");
+  appendText(head, "strong", "staff-name", staffId);
+  appendText(head, "span", "staff-status", "idle");
+  row.appendChild(head);
+
+  appendText(row, "div", "small staff-current", "Current order: none");
+  appendText(row, "div", "small muted staff-completed", "Completed: 0");
+  appendText(row, "div", "small muted staff-last", "Last action: none");
+  appendText(row, "div", "staff-thinking muted", "Thinking: No thinking summary yet.");
+  makeExpandable(row, `staff:${staffId}`, renderSnapshotFromState);
+  return row;
+}
+
+function updateStaffThinking(row, thinking) {
+  const summary = thinking?.summary || "";
+  const nextKey = `${thinking?.updated_at || ""}:${summary}`;
+  if (row.dataset.thinkingKey === nextKey) {
+    return;
+  }
+
+  const thinkingNode = row.querySelector(".staff-thinking");
+  thinkingNode.textContent = summary
+    ? `Thinking: ${clampText(summary, 140)}`
+    : "Thinking: No thinking summary yet.";
+  thinkingNode.classList.toggle("muted", !summary);
+  row.dataset.thinkingKey = nextKey;
+}
+
+function renderStaff(snapshot) {
+  const staffEntries = Object.entries(snapshot.staff || {});
+  if (!staffEntries.length) {
+    clear(staffListNode);
+    appendText(staffListNode, "div", "empty-state", "No staff on shift.");
+    return;
+  }
+
+  const visibleStaffIds = new Set();
+  const thinkingByAgent = getThinkingByAgent(snapshot);
+  staffEntries.forEach(([staffId, staff]) => {
+    visibleStaffIds.add(staffId);
+    let row = staffListNode.querySelector(`[data-staff-id="${staffId}"]`);
+    if (!row) {
+      row = createStaffRow(staffId);
+      staffListNode.appendChild(row);
+    }
+
+    row.className = `staff-row ${staff.status || "idle"}`;
+    row.querySelector(".staff-name").textContent = staff.display_name || staffId;
+    row.querySelector(".staff-status").textContent = staff.status || "idle";
+    row.querySelector(".staff-current").textContent = `Current order: ${staff.current_order_id || "none"}`;
+    row.querySelector(".staff-completed").textContent = `Completed: ${staff.orders_completed ?? 0}`;
+    row.querySelector(".staff-last").textContent = `Last action: ${staff.last_action || "none"}`;
+    updateStaffThinking(row, thinkingByAgent.get(staffId));
+  });
+
+  staffListNode.querySelectorAll("[data-staff-id]").forEach((row) => {
+    if (!visibleStaffIds.has(row.dataset.staffId)) {
+      row.remove();
+    }
+  });
+}
+
 function renderActiveCustomers(snapshot) {
   clear(activeCustomersNode);
   if (!snapshot.active_customers.length) {
@@ -194,9 +343,19 @@ function renderActiveCustomers(snapshot) {
     return;
   }
 
+  const thinkingByAgent = getThinkingByAgent(snapshot);
   snapshot.active_customers.forEach((customer) => {
-    const pill = createElement("div", "presence-pill");
-    pill.textContent = `${customer.name} - ${customer.table_id || "standing"}`;
+    const isStanding = !customer.table_id;
+    const pill = createElement("div", isStanding ? "presence-pill has-thought-slot" : "presence-pill");
+    appendText(pill, "span", "presence-person", `${customer.name} - ${customer.table_id || "standing"}`);
+    if (isStanding) {
+      appendThoughtBubble(
+        pill,
+        thinkingByAgent.get(customer.customer_id)?.summary,
+        "presence-thought",
+        `presence:${customer.customer_id}`
+      );
+    }
     activeCustomersNode.appendChild(pill);
   });
 }
@@ -277,35 +436,6 @@ function renderMenu(snapshot) {
   });
 }
 
-function renderAgentThinking(snapshot) {
-  clear(agentThinkingNode);
-  const entries = snapshot.agent_thinking || [];
-  if (!entries.length) {
-    appendText(agentThinkingNode, "div", "empty-state", "No thinking summaries yet.");
-    return;
-  }
-
-  entries.forEach((entry) => {
-    const item = createElement("div", "thinking-item");
-    const head = createElement("div", "row-head");
-    const label = createElement("div");
-    appendText(label, "div", "event-agent", entry.display_name || entry.agent_id);
-    appendText(label, "div", "thinking-role", entry.agent_type);
-    head.appendChild(label);
-    if (entry.updated_at) {
-      appendText(head, "span", "event-time", formatTime(entry.updated_at));
-    }
-    item.appendChild(head);
-    appendText(
-      item,
-      "div",
-      entry.summary ? "thinking-summary" : "thinking-summary muted",
-      entry.summary || "No thinking summary yet."
-    );
-    agentThinkingNode.appendChild(item);
-  });
-}
-
 function renderEvents() {
   clear(eventLogNode);
   if (!state.events.length) {
@@ -344,9 +474,10 @@ function renderSnapshotFromState() {
   }
   renderStatus();
   renderKpis(state.snapshot);
+  renderCounterThinking(state.snapshot);
+  renderStaff(state.snapshot);
   renderTables(state.snapshot);
   renderActiveCustomers(state.snapshot);
-  renderAgentThinking(state.snapshot);
   renderPipeline(state.snapshot);
   renderMenu(state.snapshot);
 }
@@ -383,6 +514,7 @@ function attachControls() {
     clear(eventLogNode);
     state.events = [];
     state.eventCursor = 0;
+    state.seenThoughts.clear();
     return runControl(() => api("/api/control/reset", "POST"), "Simulation reset.");
   });
   spawnBtn.addEventListener("click", () =>
