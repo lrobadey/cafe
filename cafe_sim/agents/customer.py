@@ -19,6 +19,8 @@ client = build_openai_client()
 
 MIN_CUSTOMER_WAIT_SECONDS = 3
 MAX_CUSTOMER_WAIT_SECONDS = 15
+MIN_CUSTOMER_LINGER_SECONDS = 3
+MAX_CUSTOMER_LINGER_SECONDS = 15
 
 CUSTOMER_TOOLS = [
     {
@@ -113,6 +115,59 @@ CUSTOMER_TOOLS = [
     },
     {
         "type": "function",
+        "name": "sip_drink",
+        "description": "Sip one drink item that you have already received from your order.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "string",
+                    "description": "The drink item ID you received, such as 'latte' or 'tea'.",
+                }
+            },
+            "required": ["item_id"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "eat_item",
+        "description": "Eat one food item that you have already received from your order.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "item_id": {
+                    "type": "string",
+                    "description": "The food item ID you received, such as 'muffin'.",
+                }
+            },
+            "required": ["item_id"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
+        "name": "linger",
+        "description": "Stay briefly at your table after receiving your order.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "seconds": {
+                    "type": "integer",
+                    "minimum": MIN_CUSTOMER_LINGER_SECONDS,
+                    "maximum": MAX_CUSTOMER_LINGER_SECONDS,
+                    "description": "How many real seconds to linger before the next action.",
+                }
+            },
+            "required": ["seconds"],
+            "additionalProperties": False,
+        },
+        "strict": True,
+    },
+    {
+        "type": "function",
         "name": "leave",
         "description": "Leave the cafe. Always call this as the final action.",
         "parameters": {
@@ -146,9 +201,12 @@ Use cafe tools to move through your visit:
 4. place_order if you want something
 5. find_seat if available
 6. wait briefly, then check_order again while waiting
-7. leave when done or when the cafe is not working for you
+7. once you receive your order, stay and consume it if you have a seat
+8. leave when done or when the cafe is not working for you
 
-Be true to your personality. Keep moving. Always call leave as your final action."""
+After pickup, use sip_drink for drinks and eat_item for food that you actually received.
+You may linger briefly at a table after receiving your order. Hurried customers may leave sooner.
+Customers without seats may take items away and leave. Always call leave as your final action."""
 
 
 async def execute_customer_tool(
@@ -159,6 +217,8 @@ async def execute_customer_tool(
     state: dict,
 ) -> str:
     if tool_name == "enter_cafe":
+        state["visit_phase"] = "arrived"
+        await world.update_customer_visit(customer_id, visit_phase="arrived")
         empty = world.count_empty_tables()
         queue_len = world.queue_length()
         return (
@@ -167,6 +227,8 @@ async def execute_customer_tool(
         )
 
     if tool_name == "read_menu":
+        state["visit_phase"] = "ordering"
+        await world.update_customer_visit(customer_id, visit_phase="ordering")
         menu = world.get_menu()
         lines = [f"- {v['name']} (ID: {k}): ${v['price']:.2f}" for k, v in menu.items()]
         return "Menu:\n" + "\n".join(lines)
@@ -181,6 +243,8 @@ async def execute_customer_tool(
             return "You've already placed an order. Check its status with check_order."
         order_id = await world.place_order(customer_id, items)
         state["order_id"] = order_id
+        state["visit_phase"] = "waiting"
+        await world.update_customer_visit(customer_id, visit_phase="waiting")
         item_names = [available[item]["name"] for item in items]
         return (
             f"Order placed. Order ID: {order_id}. "
@@ -207,12 +271,39 @@ async def execute_customer_tool(
         waited = int(time.time() - state["arrived_at"])
         if order["status"] == "ready":
             await world.mark_order_delivered(order_id)
-            return f"Your order is ready. You pick it up at the counter. Total wait time: {waited}s."
+            received_at = time.time()
+            held_items = list(order["items"])
+            state["held_items"] = held_items
+            state["visit_phase"] = "received_order"
+            state["received_order_at"] = received_at
+            item_names = [
+                world.get_menu_item(item_id)["name"]
+                for item_id in held_items
+                if world.get_menu_item(item_id)
+            ]
+            await world.update_customer_visit(
+                customer_id,
+                visit_phase="received_order",
+                held_items=held_items,
+                consumed_items=state.get("consumed_items", []),
+                received_order_at=received_at,
+            )
+            if state.get("table_id"):
+                return (
+                    f"Your order is ready. You pick it up at the counter: {', '.join(item_names)}. "
+                    f"Total wait time: {waited}s. You have a seat, so you can sip_drink, eat_item, linger, or leave."
+                )
+            return (
+                f"Your order is ready. You pick it up at the counter: {', '.join(item_names)}. "
+                f"Total wait time: {waited}s. You do not have a seat, so you can take it away and leave."
+            )
         if order["status"] == "pending":
             return f"Your order is still in the queue. Waited {waited}s so far."
         if order["status"] in ("claimed", "preparing"):
             return f"The barista is preparing your order now. Waited {waited}s so far."
         if order["status"] == "delivered":
+            if state.get("held_items"):
+                return "You already received your order. Consume your items or leave when ready."
             return "You already received your order."
         return f"Unknown order status: {order['status']}."
 
@@ -228,11 +319,69 @@ async def execute_customer_tool(
             )
         return f"You wait for {wait_seconds}s. You've been in the cafe for {waited_total}s total."
 
+    if tool_name == "sip_drink":
+        item_id = tool_input.get("item_id")
+        result = await world.consume_customer_item(customer_id, item_id, "drink", "sip_drink")
+        if not result["ok"]:
+            return result["message"]
+        state["visit_phase"] = "consuming"
+        state["held_items"] = result["held_items"]
+        state["consumed_items"] = result["consumed_items"]
+        if state.get("consumption_started_at") is None:
+            state["consumption_started_at"] = time.time()
+        return f"You sip your {result['item_name']}. Consumed items: {', '.join(state['consumed_items'])}."
+
+    if tool_name == "eat_item":
+        item_id = tool_input.get("item_id")
+        result = await world.consume_customer_item(customer_id, item_id, "food", "eat_item")
+        if not result["ok"]:
+            return result["message"]
+        state["visit_phase"] = "consuming"
+        state["held_items"] = result["held_items"]
+        state["consumed_items"] = result["consumed_items"]
+        if state.get("consumption_started_at") is None:
+            state["consumption_started_at"] = time.time()
+        return f"You eat your {result['item_name']}. Consumed items: {', '.join(state['consumed_items'])}."
+
+    if tool_name == "linger":
+        if not state.get("held_items") and not state.get("consumed_items"):
+            return "You have not received an order yet, so linger after pickup instead."
+        requested_seconds = tool_input.get("seconds", MIN_CUSTOMER_LINGER_SECONDS)
+        linger_seconds = max(
+            MIN_CUSTOMER_LINGER_SECONDS,
+            min(MAX_CUSTOMER_LINGER_SECONDS, int(requested_seconds)),
+        )
+        await asyncio.sleep(linger_seconds)
+        state["visit_phase"] = "consuming"
+        if state.get("consumption_started_at") is None:
+            state["consumption_started_at"] = time.time()
+        await world.update_customer_visit(
+            customer_id,
+            visit_phase="consuming",
+            consumption_started_at=state.get("consumption_started_at"),
+        )
+        world.log(customer_id, "linger", f"{linger_seconds}s")
+        if state.get("table_id"):
+            return f"You linger at table {state['table_id']} for {linger_seconds}s."
+        return f"You linger near the counter for {linger_seconds}s with your order."
+
     if tool_name == "leave":
         reason = tool_input.get("reason", "satisfied")
+        held_items = state.get("held_items", [])
+        consumed_items = state.get("consumed_items", [])
+        left_with_unconsumed = bool(set(held_items) - set(consumed_items))
+        state["visit_phase"] = "done"
+        await world.update_customer_visit(
+            customer_id,
+            visit_phase="done",
+            held_items=held_items,
+            consumed_items=consumed_items,
+            left_with_unconsumed_items=left_with_unconsumed,
+        )
         if state.get("table_id"):
             await world.release_table(customer_id)
-        world.log(customer_id, "leave", reason)
+        detail = f"{reason}; left_with_unconsumed={left_with_unconsumed}"
+        world.log(customer_id, "leave", detail)
         state["done"] = True
         return f"You leave the cafe. Reason: {reason}."
 
@@ -266,7 +415,13 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
         "table_id": None,
         "done": False,
         "arrived_at": time.time(),
+        "visit_phase": "arrived",
+        "held_items": [],
+        "consumed_items": [],
+        "received_order_at": None,
+        "consumption_started_at": None,
     }
+    await world.register_customer_visit(customer_id, persona, local_state["arrived_at"])
 
     hops = 0
     while not local_state["done"] and hops < MAX_CUSTOMER_HOPS:
@@ -278,6 +433,7 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
                 "hop": hops + 1,
                 "order_id": local_state.get("order_id"),
                 "table_id": local_state.get("table_id"),
+                "visit_phase": local_state.get("visit_phase"),
             },
         )
         waited = time.time() - local_state["arrived_at"]
@@ -372,6 +528,15 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
         hops += 1
 
     if not local_state["done"]:
+        held_items = local_state.get("held_items", [])
+        consumed_items = local_state.get("consumed_items", [])
+        await world.update_customer_visit(
+            customer_id,
+            visit_phase="done",
+            held_items=held_items,
+            consumed_items=consumed_items,
+            left_with_unconsumed_items=bool(set(held_items) - set(consumed_items)),
+        )
         if local_state.get("table_id"):
             await world.release_table(customer_id)
         world.log(customer_id, "leave", "hop_limit_exceeded")
@@ -384,6 +549,9 @@ async def run_customer(persona: dict, world: "WorldState", customer_id: str):
             "done": local_state["done"],
             "order_id": local_state.get("order_id"),
             "table_id": local_state.get("table_id"),
+            "visit_phase": local_state.get("visit_phase"),
+            "held_items": local_state.get("held_items", []),
+            "consumed_items": local_state.get("consumed_items", []),
             "hops": hops,
         },
     )

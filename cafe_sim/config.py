@@ -24,15 +24,15 @@ CLOSING_GRACE_SECONDS = 20
 
 # Concurrency
 MAX_CONCURRENT_CUSTOMERS = 4
-MAX_CUSTOMER_HOPS = 12
+MAX_CUSTOMER_HOPS = 16
 
-# Menu (name, price, prep_seconds)
+# Menu (name, price, prep_seconds, category)
 MENU = {
-    "espresso": {"name": "Espresso", "price": 3.00, "prep_seconds": 4, "available": True},
-    "latte": {"name": "Latte", "price": 5.50, "prep_seconds": 8, "available": True},
-    "cold_brew": {"name": "Cold Brew", "price": 5.00, "prep_seconds": 3, "available": True},
-    "tea": {"name": "Tea", "price": 3.50, "prep_seconds": 5, "available": True},
-    "muffin": {"name": "Blueberry Muffin", "price": 4.00, "prep_seconds": 2, "available": True},
+    "espresso": {"name": "Espresso", "price": 3.00, "prep_seconds": 4, "category": "drink", "available": True},
+    "latte": {"name": "Latte", "price": 5.50, "prep_seconds": 8, "category": "drink", "available": True},
+    "cold_brew": {"name": "Cold Brew", "price": 5.00, "prep_seconds": 3, "category": "drink", "available": True},
+    "tea": {"name": "Tea", "price": 3.50, "prep_seconds": 5, "category": "drink", "available": True},
+    "muffin": {"name": "Blueberry Muffin", "price": 4.00, "prep_seconds": 2, "category": "food", "available": True},
 }
 
 # Tables

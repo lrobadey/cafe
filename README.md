@@ -89,7 +89,7 @@ Then run terminal mode. You should see customer spawn, order transitions (`pendi
 | `SIM_DURATION` | `600` | Total simulation wall-clock seconds |
 | `CUSTOMER_SPAWN_INTERVAL` | `30` | Seconds between customer spawns |
 | `MAX_CONCURRENT_CUSTOMERS` | `4` | Cap on simultaneous customer agents |
-| `MAX_CUSTOMER_HOPS` | `12` | Max tool-call cycles per customer |
+| `MAX_CUSTOMER_HOPS` | `16` | Max tool-call cycles per customer |
 | `CUSTOMER_MAX_WAIT` | `90` | Seconds before the model is nudged to consider leaving |
 | `BARISTA_POLL_INTERVAL` | `5` | Idle sleep between barista work cycles |
 
@@ -97,9 +97,11 @@ Then run terminal mode. You should see customer spawn, order transitions (`pendi
 
 ### Customer
 
-Tools available to the customer model: `enter_cafe`, `read_menu`, `place_order`, `find_seat`, `check_order`, `leave`.
+Tools available to the customer model: `enter_cafe`, `read_menu`, `place_order`, `find_seat`, `check_order`, `wait`, `sip_drink`, `eat_item`, `linger`, `leave`.
 
 Each customer runs a `while not done` loop, appending `response.output` items to local `input_items` and returning `function_call_output` for every tool call. The loop exits when the model calls `leave` or `MAX_CUSTOMER_HOPS` is reached.
+
+After an order is ready, `check_order` marks it delivered and moves the purchased item IDs into the customer's visit state. The world validates post-order tools: drinks can be consumed with `sip_drink`, food can be consumed with `eat_item`, and `linger` keeps the customer occupying their table briefly before they leave.
 
 ### Barista
 

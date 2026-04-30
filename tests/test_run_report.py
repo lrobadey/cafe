@@ -83,6 +83,37 @@ class RunReporterTests(unittest.TestCase):
         self.assertEqual(thinking_by_id["cust_test"]["summary"], "Comparing budget to prices.")
         self.assertEqual(thinking_by_id["cust_test"]["display_name"], "Test Customer")
 
+    def test_live_snapshot_includes_customer_visit_phase_and_items(self):
+        world = WorldState()
+        world._state["customer_visits"]["cust_test"] = {
+            "customer_id": "cust_test",
+            "name": "Test Customer",
+            "mood": "settled",
+            "visit_phase": "consuming",
+            "held_items": ["latte", "muffin"],
+            "consumed_items": ["latte"],
+            "received_order_at": 123.0,
+            "consumption_started_at": 124.0,
+            "left_with_unconsumed_items": False,
+        }
+
+        snapshot = world.get_live_snapshot(
+            active_customers=[
+                {
+                    "customer_id": "cust_test",
+                    "name": "Test Customer",
+                    "mood": "settled",
+                    "waiting_seconds": 8,
+                }
+            ],
+            sim_state={"running": True},
+        )
+
+        customer = snapshot["active_customers"][0]
+        self.assertEqual(customer["visit_phase"], "consuming")
+        self.assertEqual(customer["held_item_names"], ["Latte", "Blueberry Muffin"])
+        self.assertEqual(customer["consumed_item_names"], ["Latte"])
+
     def test_reporter_accepts_final_snapshot_and_alerts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             reporter = RunReporter(report_root=tmp_dir)

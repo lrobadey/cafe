@@ -88,6 +88,10 @@ function formatMoney(value) {
   return `$${Number(value || 0).toFixed(2)}`;
 }
 
+function formatItemList(items) {
+  return (items || []).length ? items.join(", ") : "none";
+}
+
 function clampText(text, maxLength = 92) {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
   if (clean.length <= maxLength) {
@@ -252,11 +256,21 @@ function renderTables(snapshot) {
         `table:${customer.customer_id}`
       );
       body.appendChild(nameRow);
-      appendText(body, "div", "small muted", `${customer.mood} - waiting ${customer.waiting_seconds}s`);
+      appendText(
+        body,
+        "div",
+        "small muted",
+        `${customer.mood} - ${customer.visit_phase || "arrived"} - ${customer.waiting_seconds}s`
+      );
       if (order) {
         appendText(body, "div", "small", `${pipelineLabels[order.status]}: ${order.item_names.join(", ")}`);
+      } else if ((customer.held_item_names || []).length) {
+        appendText(body, "div", "small", `Holding: ${formatItemList(customer.held_item_names)}`);
       } else {
         appendText(body, "div", "small muted", "No open order");
+      }
+      if ((customer.consumed_item_names || []).length) {
+        appendText(body, "div", "small muted", `Consumed: ${formatItemList(customer.consumed_item_names)}`);
       }
       appendText(body, "div", "details", `${customer.customer_id}${order ? ` - ${order.order_id} - ${formatMoney(order.total_price)}` : ""}`);
     } else {
@@ -355,7 +369,12 @@ function renderActiveCustomers(snapshot) {
   snapshot.active_customers.forEach((customer) => {
     const isStanding = !customer.table_id;
     const pill = createElement("div", isStanding ? "presence-pill has-thought-slot" : "presence-pill");
-    appendText(pill, "span", "presence-person", `${customer.name} - ${customer.table_id || "standing"}`);
+    appendText(
+      pill,
+      "span",
+      "presence-person",
+      `${customer.name} - ${customer.table_id || "standing"} - ${customer.visit_phase || "arrived"}`
+    );
     if (isStanding) {
       appendThoughtBubble(
         pill,
@@ -412,7 +431,7 @@ function renderMenu(snapshot) {
     const row = createElement("div", "menu-item");
     const label = createElement("div");
     appendText(label, "strong", null, item.name);
-    appendText(label, "div", "small muted", `${formatMoney(item.price)} - ${item.prep_seconds}s prep`);
+    appendText(label, "div", "small muted", `${formatMoney(item.price)} - ${item.prep_seconds}s prep - ${item.category}`);
     appendText(label, "div", "details", `${itemId} is ${item.available ? "available" : "off menu"} for incoming customers.`);
 
     const toggleLabel = createElement("label", "menu-toggle");

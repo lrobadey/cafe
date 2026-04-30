@@ -55,6 +55,7 @@ class WorldState:
             "order_queue": [],
             "event_log": [],
             "agent_thinking": {},
+            "customer_visits": {},
             "staff": {
                 "barista_alex": {
                     "display_name": "Alex",
@@ -94,6 +95,10 @@ class WorldState:
     def get_table_availability(self) -> dict:
         return {tid: t["status"] for tid, t in self._state["tables"].items()}
 
+    def get_menu_item(self, item_id: str) -> Optional[dict]:
+        item = self._state["menu"].get(item_id)
+        return dict(item) if item else None
+
     def count_empty_tables(self) -> int:
         return sum(1 for t in self._state["tables"].values() if t["status"] == "empty")
 
@@ -108,6 +113,86 @@ class WorldState:
 
     def get_staff(self) -> dict:
         return {staff_id: dict(staff) for staff_id, staff in self._state["staff"].items()}
+
+    def get_customer_visit(self, customer_id: str) -> dict:
+        visit = self._state["customer_visits"].get(customer_id, {})
+        return {
+            **dict(visit),
+            "held_items": list(visit.get("held_items", [])),
+            "consumed_items": list(visit.get("consumed_items", [])),
+        }
+
+    async def register_customer_visit(self, customer_id: str, persona: dict, arrived_at: float):
+        async with self._lock:
+            self._state["customer_visits"][customer_id] = {
+                "customer_id": customer_id,
+                "name": persona["name"],
+                "mood": persona["mood"],
+                "visit_phase": "arrived",
+                "held_items": [],
+                "consumed_items": [],
+                "received_order_at": None,
+                "consumption_started_at": None,
+                "left_with_unconsumed_items": False,
+                "arrived_at": arrived_at,
+            }
+
+    async def update_customer_visit(self, customer_id: str, **updates):
+        async with self._lock:
+            visit = self._state["customer_visits"].setdefault(
+                customer_id,
+                {
+                    "customer_id": customer_id,
+                    "visit_phase": "arrived",
+                    "held_items": [],
+                    "consumed_items": [],
+                    "received_order_at": None,
+                    "consumption_started_at": None,
+                    "left_with_unconsumed_items": False,
+                },
+            )
+            for key, value in updates.items():
+                if key in {"held_items", "consumed_items"} and value is not None:
+                    visit[key] = list(value)
+                else:
+                    visit[key] = value
+
+    async def consume_customer_item(
+        self,
+        customer_id: str,
+        item_id: str,
+        expected_category: str,
+        action_name: str,
+    ) -> dict:
+        async with self._lock:
+            visit = self._state["customer_visits"].get(customer_id)
+            if not visit:
+                return {"ok": False, "message": "Customer visit is not registered."}
+            item = self._state["menu"].get(item_id)
+            if not item:
+                return {"ok": False, "message": f"Unknown menu item: {item_id}."}
+            if item.get("category") != expected_category:
+                verb = "drink" if expected_category == "drink" else "food"
+                return {"ok": False, "message": f"{item['name']} is not a {verb} item."}
+            held_items = visit.setdefault("held_items", [])
+            consumed_items = visit.setdefault("consumed_items", [])
+            if item_id not in held_items:
+                return {"ok": False, "message": f"You do not have {item['name']} to consume."}
+            if item_id in consumed_items:
+                return {"ok": False, "message": f"You already consumed {item['name']}."}
+            consumed_items.append(item_id)
+            visit["visit_phase"] = "consuming"
+            if visit.get("consumption_started_at") is None:
+                visit["consumption_started_at"] = time.time()
+            result = {
+                "ok": True,
+                "message": f"Consumed {item['name']}.",
+                "held_items": list(held_items),
+                "consumed_items": list(consumed_items),
+                "item_name": item["name"],
+            }
+        self.log(customer_id, action_name, item_id)
+        return result
 
     def _update_staff(self, staff_id: str, **updates):
         staff = self._state["staff"].get(staff_id)
@@ -149,6 +234,9 @@ class WorldState:
         abandoned = [order for order in orders if order["status"] == ORDER_ABANDONED]
         stale = [order for order in orders if order["status"] == ORDER_STALE]
         failed = [order for order in orders if order["status"] == ORDER_FAILED]
+        visits = list(self._state["customer_visits"].values())
+        visits_with_consumed_items = [visit for visit in visits if visit.get("consumed_items")]
+        visits_left_with_unconsumed = [visit for visit in visits if visit.get("left_with_unconsumed_items")]
         ready_waits = [order["ready_at"] - order["placed_at"] for order in orders if order.get("ready_at")]
         delivery_waits = [order["delivered_at"] - order["placed_at"] for order in delivered if order.get("delivered_at")]
         claim_waits = [order["claimed_at"] - order["placed_at"] for order in orders if order.get("claimed_at")]
@@ -166,6 +254,9 @@ class WorldState:
             "orders_stale": len(stale),
             "orders_failed": len(failed),
             "orders_not_delivered": len(orders) - len(delivered),
+            "customers_consumed_items": len(visits_with_consumed_items),
+            "items_consumed": sum(len(visit.get("consumed_items", [])) for visit in visits),
+            "customers_left_with_unconsumed_items": len(visits_left_with_unconsumed),
             "average_wait_seconds": round(sum(ready_waits) / len(ready_waits), 1) if ready_waits else None,
             "average_total_wait_seconds": round(sum(delivery_waits) / len(delivery_waits), 1) if delivery_waits else None,
             "average_claim_wait_seconds": round(sum(claim_waits) / len(claim_waits), 1) if claim_waits else None,
@@ -315,7 +406,26 @@ class WorldState:
         return True
 
     def get_live_snapshot(self, active_customers: list[dict], sim_state: dict) -> dict:
-        customer_by_id = {customer["customer_id"]: dict(customer) for customer in active_customers}
+        customer_by_id = {}
+        for customer in active_customers:
+            customer_id = customer["customer_id"]
+            visit = self.get_customer_visit(customer_id)
+            held_items = visit.get("held_items", [])
+            consumed_items = visit.get("consumed_items", [])
+            customer_by_id[customer_id] = {
+                **dict(customer),
+                "visit_phase": visit.get("visit_phase", "arrived"),
+                "held_items": held_items,
+                "held_item_names": [
+                    self._state["menu"][item_id]["name"] for item_id in held_items if item_id in self._state["menu"]
+                ],
+                "consumed_items": consumed_items,
+                "consumed_item_names": [
+                    self._state["menu"][item_id]["name"] for item_id in consumed_items if item_id in self._state["menu"]
+                ],
+                "received_order_at": visit.get("received_order_at"),
+                "consumption_started_at": visit.get("consumption_started_at"),
+            }
         table_by_customer = {
             table["customer_id"]: table_id
             for table_id, table in self._state["tables"].items()
@@ -361,6 +471,7 @@ class WorldState:
                 "name": item["name"],
                 "price": item["price"],
                 "prep_seconds": item["prep_seconds"],
+                "category": item.get("category"),
                 "available": item["available"],
             }
             for item_id, item in self._state["menu"].items()
@@ -376,7 +487,7 @@ class WorldState:
             "agent_thinking": self.get_agent_thinking(active_customers, sim_state),
             "active_customers": [
                 {
-                    **dict(customer),
+                    **customer_by_id.get(customer["customer_id"], dict(customer)),
                     "table_id": table_by_customer.get(customer["customer_id"]),
                     "order_id": order_by_customer.get(customer["customer_id"], {}).get("order_id"),
                     "order_status": order_by_customer.get(customer["customer_id"], {}).get("status"),
