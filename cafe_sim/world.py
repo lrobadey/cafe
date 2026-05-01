@@ -270,7 +270,6 @@ class WorldState:
         }
         async with self._lock:
             self._state["order_queue"].append(order)
-            self._state["revenue"] += total_price
         self.log(customer_id, "place_order", f"items={items} -> {order_id}")
         return order_id
 
@@ -918,6 +917,8 @@ class WorldState:
         async with self._lock:
             for order in self._state["order_queue"]:
                 if order["order_id"] == order_id:
+                    if order["status"] != ORDER_DELIVERED:
+                        self._state["revenue"] += order["total_price"]
                     order["status"] = ORDER_DELIVERED
                     order["delivered_at"] = time.time()
         self.log("barista", "delivered", order_id)

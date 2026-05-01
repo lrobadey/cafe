@@ -112,6 +112,30 @@ class CustomerWaitToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["visit_phase"], "order_failed")
         self.assertEqual(world.get_customer_visit("cust_test")["visit_phase"], "order_failed")
 
+    async def test_customer_can_reorder_after_stockout_failure(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 0
+        failed_order_id = await world.place_order("cust_test", ["latte"])
+        await world.claim_order("barista_alex", failed_order_id)
+        await world.prepare_order("barista_alex", failed_order_id)
+        state = {
+            "order_id": failed_order_id,
+            "table_id": "t1",
+            "done": False,
+            "arrived_at": time.time(),
+            "held_items": [],
+            "consumed_items": [],
+        }
+        await execute_customer_tool("check_order", {"order_id": failed_order_id}, "cust_test", world, state)
+
+        result = await execute_customer_tool("place_order", {"items": ["tea"]}, "cust_test", world, state)
+
+        self.assertIn("Order placed", result)
+        self.assertIn("Tea", result)
+        self.assertEqual(state["previous_order_id"], failed_order_id)
+        self.assertNotEqual(state["order_id"], failed_order_id)
+        self.assertEqual(world.get_order(state["order_id"])["items"], ["tea"])
+
     async def test_sip_drink_succeeds_for_held_drink(self):
         world = WorldState()
         await world.update_customer_visit("cust_test", held_items=["latte"], consumed_items=[])

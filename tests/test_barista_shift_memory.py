@@ -251,6 +251,26 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(alex["status"], "idle")
         self.assertIsNone(alex["current_order_id"])
 
+    async def test_revenue_only_counts_delivered_orders(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 0
+        failed_order_id = await world.place_order("cust_failed", ["latte"])
+        delivered_order_id = await world.place_order("cust_done", ["espresso"])
+
+        await world.claim_order("barista_alex", failed_order_id)
+        await world.prepare_order("barista_alex", failed_order_id)
+        await world.claim_order("barista_alex", delivered_order_id)
+        await world.prepare_order("barista_alex", delivered_order_id)
+        await world.mark_order_ready(delivered_order_id, barista_id="barista_alex")
+        await world.mark_order_delivered(delivered_order_id)
+        await world.mark_order_delivered(delivered_order_id)
+
+        summary = world.get_shift_summary()
+
+        self.assertEqual(summary["orders_failed"], 1)
+        self.assertEqual(summary["orders_delivered"], 1)
+        self.assertEqual(summary["revenue"], 3.00)
+
     async def test_non_owner_cannot_prepare_or_mark_ready(self):
         world = WorldState()
         order_id = await world.place_order("cust_test", ["latte"])

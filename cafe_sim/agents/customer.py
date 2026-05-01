@@ -240,7 +240,12 @@ async def execute_customer_tool(
         if invalid:
             return f"Could not place order. These item IDs are not on the menu: {invalid}."
         if state.get("order_id"):
-            return "You've already placed an order. Check its status with check_order."
+            current_order = world.get_order(state["order_id"])
+            if current_order and current_order.get("status") == "failed":
+                state["previous_order_id"] = state["order_id"]
+                state["order_id"] = None
+            else:
+                return "You've already placed an order. Check its status with check_order."
         order_id = await world.place_order(customer_id, items)
         state["order_id"] = order_id
         state["visit_phase"] = "waiting"
