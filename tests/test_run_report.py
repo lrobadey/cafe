@@ -114,6 +114,33 @@ class RunReporterTests(unittest.TestCase):
         self.assertEqual(customer["held_item_names"], ["Latte", "Blueberry Muffin"])
         self.assertEqual(customer["consumed_item_names"], ["Latte"])
 
+    def test_shift_summary_includes_stockout_metrics(self):
+        world = WorldState()
+        world._state["order_queue"].append(
+            {
+                "order_id": "ord_stockout",
+                "customer_id": "cust_test",
+                "items": ["latte"],
+                "total_price": 5.5,
+                "status": "failed",
+                "barista_id": "barista_alex",
+                "placed_at": 1.0,
+                "claimed_at": 2.0,
+                "preparing_at": None,
+                "ready_at": None,
+                "delivered_at": None,
+                "completed_by": None,
+                "closed_at": 3.0,
+                "close_reason": "stockout",
+                "missing_supplies": {"milk": {"name": "Milk", "required": 1, "available": 0, "short_by": 1}},
+            }
+        )
+
+        summary = world.get_shift_summary()
+
+        self.assertEqual(summary["stockout_failures"], 1)
+        self.assertEqual(summary["stockout_failures_by_supply"], {"milk": 1})
+
     def test_reporter_accepts_final_snapshot_and_alerts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             reporter = RunReporter(report_root=tmp_dir)

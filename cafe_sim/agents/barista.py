@@ -180,7 +180,7 @@ def update_shift_memory(memory: dict, tool_name: str, result: str) -> None:
         return
 
     if tool_name == "prepare_order":
-        if result.startswith("Order ") and "cannot" in result:
+        if (result.startswith("Order ") and "cannot" in result) or result.startswith("Cannot prepare order "):
             memory["current_order_id"] = None
         memory["last_action"] = result
         return

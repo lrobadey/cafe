@@ -6,7 +6,7 @@ A real-time, multi-agent cafe simulation powered by the OpenAI Responses API. A 
 
 Four nested systems compose the simulation:
 
-1. **World** (`cafe_sim/world.py`) — single source of truth: menu, tables, order queue, event log. All mutations go through an `asyncio.Lock`.
+1. **World** (`cafe_sim/world.py`) — single source of truth: menu, supplies, tables, order queue, event log. All mutations go through an `asyncio.Lock`.
 2. **Agents** (`cafe_sim/agents/`) — one barista loop and N customer loops, each calling the OpenAI Responses API in a tool-use cycle.
 3. **Tools** — local Python functions that validate and apply model decisions to `WorldState`, then return a result string back to the model.
 4. **Runner** (`cafe_sim/runner.py`) — real-time clock that starts the barista and spawns customers on a fixed interval.
@@ -90,6 +90,12 @@ Then run terminal mode. You should see customer spawn, order transitions (`pendi
 | `CUSTOMER_SPAWN_INTERVAL` | `30` | Seconds between customer spawns |
 | `MAX_CONCURRENT_CUSTOMERS` | `4` | Cap on simultaneous customer agents |
 | `MAX_CUSTOMER_HOPS` | `16` | Max tool-call cycles per customer |
+
+## Supplies
+
+Supplies are owned by `WorldState` and linked to menu recipes. Baristas can only prepare an order if the required supplies are available. If a recipe cannot be fulfilled, `prepare_order` marks the order `failed`, records the missing supplies, clears the barista's active order, and logs a stockout event.
+
+Tracked supplies: coffee beans, milk, cups, cold brew servings, tea bags, and muffins. The dashboard shows current supply counts and low/out statuses.
 | `CUSTOMER_MAX_WAIT` | `90` | Seconds before the model is nudged to consider leaving |
 | `BARISTA_POLL_INTERVAL` | `5` | Idle sleep between barista work cycles |
 

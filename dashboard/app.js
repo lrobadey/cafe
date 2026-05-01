@@ -17,6 +17,7 @@ const menuNode = document.getElementById("menu-list");
 const eventLogNode = document.getElementById("event-log");
 const counterLabelNode = document.getElementById("counter-label");
 const staffListNode = document.getElementById("staff-list");
+const suppliesListNode = document.getElementById("supplies-list");
 
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
@@ -358,6 +359,25 @@ function renderStaff(snapshot) {
   });
 }
 
+function renderSupplies(snapshot) {
+  clear(suppliesListNode);
+  const entries = Object.entries(snapshot.supplies || {});
+  if (!entries.length) {
+    appendText(suppliesListNode, "div", "empty-state", "No supplies tracked.");
+    return;
+  }
+
+  entries.forEach(([supplyId, supply]) => {
+    const row = createElement("div", `supply-row ${supply.status || "normal"}`);
+    const head = createElement("div", "row-head");
+    appendText(head, "strong", null, supply.name || supplyId);
+    appendText(head, "span", "supply-status", supply.status || "normal");
+    row.appendChild(head);
+    appendText(row, "div", "small muted", `${supply.quantity} left`);
+    suppliesListNode.appendChild(row);
+  });
+}
+
 function renderActiveCustomers(snapshot) {
   clear(activeCustomersNode);
   if (!snapshot.active_customers.length) {
@@ -508,6 +528,7 @@ function renderSnapshotFromState() {
   renderKpis(state.snapshot);
   renderCounterThinking(state.snapshot);
   renderStaff(state.snapshot);
+  renderSupplies(state.snapshot);
   renderTables(state.snapshot);
   renderActiveCustomers(state.snapshot);
   renderPipeline(state.snapshot);

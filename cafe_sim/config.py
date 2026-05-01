@@ -35,6 +35,25 @@ MENU = {
     "muffin": {"name": "Blueberry Muffin", "price": 4.00, "prep_seconds": 2, "category": "food", "available": True},
 }
 
+# Physical supplies and menu recipes. Counts are intentionally modest so stockouts
+# can appear during normal runs.
+SUPPLIES = {
+    "coffee_beans": {"name": "Coffee beans", "quantity": 10, "low_threshold": 3},
+    "milk": {"name": "Milk", "quantity": 6, "low_threshold": 2},
+    "cups": {"name": "Cups", "quantity": 14, "low_threshold": 4},
+    "cold_brew_servings": {"name": "Cold brew servings", "quantity": 6, "low_threshold": 2},
+    "tea_bags": {"name": "Tea bags", "quantity": 6, "low_threshold": 2},
+    "muffins": {"name": "Muffins", "quantity": 5, "low_threshold": 2},
+}
+
+MENU_RECIPES = {
+    "espresso": {"coffee_beans": 1, "cups": 1},
+    "latte": {"coffee_beans": 1, "milk": 1, "cups": 1},
+    "cold_brew": {"cold_brew_servings": 1, "cups": 1},
+    "tea": {"tea_bags": 1, "cups": 1},
+    "muffin": {"muffins": 1},
+}
+
 # Tables
 TABLE_IDS = ["t1", "t2", "t3", "t4"]
 

@@ -5,7 +5,7 @@ import time
 import uuid
 from typing import Optional
 
-from config import MENU, TABLE_IDS
+from config import MENU, MENU_RECIPES, SUPPLIES, TABLE_IDS
 from logger import log_event
 from run_report import RunReporter
 
@@ -51,6 +51,7 @@ class WorldState:
         self.reporter = reporter
         self._state = {
             "menu": {k: dict(v) for k, v in MENU.items()},
+            "supplies": {k: dict(v) for k, v in SUPPLIES.items()},
             "tables": {tid: {"status": "empty", "customer_id": None} for tid in TABLE_IDS},
             "order_queue": [],
             "event_log": [],
@@ -98,6 +99,50 @@ class WorldState:
     def get_menu_item(self, item_id: str) -> Optional[dict]:
         item = self._state["menu"].get(item_id)
         return dict(item) if item else None
+
+    def get_supplies(self) -> dict:
+        return {
+            supply_id: {
+                **dict(supply),
+                "status": self._get_supply_status(supply),
+            }
+            for supply_id, supply in self._state["supplies"].items()
+        }
+
+    def _get_supply_status(self, supply: dict) -> str:
+        quantity = supply.get("quantity", 0)
+        if quantity <= 0:
+            return "out"
+        if quantity <= supply.get("low_threshold", 0):
+            return "low"
+        return "normal"
+
+    def _get_recipe_requirements(self, items: list[str]) -> dict[str, int]:
+        requirements = {}
+        for item_id in items:
+            for supply_id, quantity in MENU_RECIPES.get(item_id, {}).items():
+                requirements[supply_id] = requirements.get(supply_id, 0) + quantity
+        return requirements
+
+    def _get_missing_supplies(self, requirements: dict[str, int]) -> dict[str, dict]:
+        missing = {}
+        for supply_id, required in requirements.items():
+            available = self._state["supplies"].get(supply_id, {}).get("quantity", 0)
+            if available < required:
+                supply = self._state["supplies"].get(supply_id, {"name": supply_id})
+                missing[supply_id] = {
+                    "name": supply.get("name", supply_id),
+                    "required": required,
+                    "available": available,
+                    "short_by": required - available,
+                }
+        return missing
+
+    def _format_missing_supplies(self, missing: dict[str, dict]) -> str:
+        return ", ".join(
+            f"{entry['name']} need {entry['required']} have {entry['available']}"
+            for entry in missing.values()
+        )
 
     def count_empty_tables(self) -> int:
         return sum(1 for t in self._state["tables"].values() if t["status"] == "empty")
@@ -221,6 +266,7 @@ class WorldState:
             "completed_by": None,
             "closed_at": None,
             "close_reason": None,
+            "missing_supplies": {},
         }
         async with self._lock:
             self._state["order_queue"].append(order)
@@ -234,6 +280,11 @@ class WorldState:
         abandoned = [order for order in orders if order["status"] == ORDER_ABANDONED]
         stale = [order for order in orders if order["status"] == ORDER_STALE]
         failed = [order for order in orders if order["status"] == ORDER_FAILED]
+        stockout_failures = [order for order in failed if order.get("close_reason") == "stockout"]
+        failures_by_supply = {}
+        for order in stockout_failures:
+            for supply_id in order.get("missing_supplies", {}):
+                failures_by_supply[supply_id] = failures_by_supply.get(supply_id, 0) + 1
         visits = list(self._state["customer_visits"].values())
         visits_with_consumed_items = [visit for visit in visits if visit.get("consumed_items")]
         visits_left_with_unconsumed = [visit for visit in visits if visit.get("left_with_unconsumed_items")]
@@ -254,6 +305,8 @@ class WorldState:
             "orders_stale": len(stale),
             "orders_failed": len(failed),
             "orders_not_delivered": len(orders) - len(delivered),
+            "stockout_failures": len(stockout_failures),
+            "stockout_failures_by_supply": failures_by_supply,
             "customers_consumed_items": len(visits_with_consumed_items),
             "items_consumed": sum(len(visit.get("consumed_items", [])) for visit in visits),
             "customers_left_with_unconsumed_items": len(visits_left_with_unconsumed),
@@ -302,6 +355,14 @@ class WorldState:
             and order["status"] in {ORDER_CLAIMED, ORDER_PREPARING}
         ]
         ready = [order for order in self._state["order_queue"] if order["status"] == ORDER_READY]
+        supply_lines = []
+        for supply_id, supply in self.get_supplies().items():
+            status = supply["status"]
+            if status == "normal":
+                continue
+            supply_lines.append(f"- {supply['name']}: {status} ({supply['quantity']} left)")
+        if not supply_lines:
+            supply_lines.append("- all normal")
         now = time.time()
 
         if len(pending) >= 3:
@@ -347,6 +408,9 @@ class WorldState:
                 f"- Claimed by you: {len(claimed_by_you)}",
                 *other_lines,
                 f"- Ready orders: {len(ready)}",
+                "",
+                "Supplies:",
+                *supply_lines,
                 "",
                 "Pending orders:",
                 *pending_lines,
@@ -463,6 +527,7 @@ class WorldState:
                 "completed_by": order["completed_by"],
                 "closed_at": order.get("closed_at"),
                 "close_reason": order.get("close_reason"),
+                "missing_supplies": dict(order.get("missing_supplies", {})),
             }
             for order in self._state["order_queue"]
         ]
@@ -483,6 +548,7 @@ class WorldState:
             "tables": tables,
             "queue": queue,
             "menu": menu,
+            "supplies": self.get_supplies(),
             "staff": self.get_staff(),
             "agent_thinking": self.get_agent_thinking(active_customers, sim_state),
             "active_customers": [
@@ -757,6 +823,29 @@ class WorldState:
                         "ok": False,
                         "message": f"Order {order_id} is claimed by {owner_display}. Check the queue for your order.",
                     }
+                requirements = self._get_recipe_requirements(order["items"])
+                missing = self._get_missing_supplies(requirements)
+                if missing:
+                    now = time.time()
+                    order["status"] = ORDER_FAILED
+                    order["closed_at"] = now
+                    order["close_reason"] = "stockout"
+                    order["missing_supplies"] = missing
+                    self._update_staff(
+                        barista_id,
+                        status="idle",
+                        current_order_id=None,
+                        last_action=f"could not prepare {order_id}; stockout",
+                    )
+                    missing_text = self._format_missing_supplies(missing)
+                    self.log(barista_id, "stockout", f"{order_id}: {missing_text}")
+                    return {
+                        "ok": False,
+                        "message": f"Cannot prepare order {order_id}: missing supplies ({missing_text}).",
+                        "missing_supplies": missing,
+                    }
+                for supply_id, quantity in requirements.items():
+                    self._state["supplies"][supply_id]["quantity"] -= quantity
                 order["status"] = ORDER_PREPARING
                 order["preparing_at"] = time.time()
                 self._update_staff(

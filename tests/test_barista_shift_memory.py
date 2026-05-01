@@ -90,6 +90,19 @@ class BaristaShiftMemoryTests(unittest.TestCase):
 
         self.assertIn("You are Jamie, the barista", instructions)
 
+    def test_stockout_prepare_result_clears_current_order_memory(self):
+        memory = create_shift_memory()
+        memory["current_order_id"] = "ord_test"
+
+        update_shift_memory(
+            memory,
+            "prepare_order",
+            "Cannot prepare order ord_test: missing supplies (Milk need 1 have 0).",
+        )
+
+        self.assertIsNone(memory["current_order_id"])
+        self.assertIn("missing supplies", memory["last_action"])
+
 
 class BaristaToolIdentityTests(unittest.IsolatedAsyncioTestCase):
     async def test_claim_order_uses_passed_barista_id(self):
@@ -185,6 +198,58 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(alex["status"], "preparing")
         self.assertEqual(alex["current_order_id"], order_id)
         self.assertEqual(alex["last_action"], f"preparing {order_id}")
+
+    async def test_prepare_order_decrements_recipe_supplies(self):
+        world = WorldState()
+        order_id = await world.place_order("cust_test", ["latte"])
+        await world.claim_order("barista_alex", order_id)
+        before = world.get_supplies()
+
+        result = await world.prepare_order("barista_alex", order_id)
+        after = world.get_supplies()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(after["coffee_beans"]["quantity"], before["coffee_beans"]["quantity"] - 1)
+        self.assertEqual(after["milk"]["quantity"], before["milk"]["quantity"] - 1)
+        self.assertEqual(after["cups"]["quantity"], before["cups"]["quantity"] - 1)
+
+    async def test_prepare_order_aggregates_multi_item_recipe_supplies(self):
+        world = WorldState()
+        order_id = await world.place_order("cust_test", ["latte", "muffin"])
+        await world.claim_order("barista_alex", order_id)
+        before = world.get_supplies()
+
+        result = await world.prepare_order("barista_alex", order_id)
+        after = world.get_supplies()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(after["coffee_beans"]["quantity"], before["coffee_beans"]["quantity"] - 1)
+        self.assertEqual(after["milk"]["quantity"], before["milk"]["quantity"] - 1)
+        self.assertEqual(after["cups"]["quantity"], before["cups"]["quantity"] - 1)
+        self.assertEqual(after["muffins"]["quantity"], before["muffins"]["quantity"] - 1)
+
+    async def test_stockout_fails_order_without_partial_supply_decrement(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 0
+        order_id = await world.place_order("cust_test", ["latte"])
+        await world.claim_order("barista_alex", order_id)
+        before = world.get_supplies()
+
+        result = await world.prepare_order("barista_alex", order_id)
+        after = world.get_supplies()
+        order = world.get_order(order_id)
+        alex = world.get_staff()["barista_alex"]
+
+        self.assertFalse(result["ok"])
+        self.assertIn("missing supplies", result["message"])
+        self.assertEqual(order["status"], "failed")
+        self.assertEqual(order["close_reason"], "stockout")
+        self.assertIn("milk", order["missing_supplies"])
+        self.assertIsNotNone(order["closed_at"])
+        self.assertEqual(before["coffee_beans"]["quantity"], after["coffee_beans"]["quantity"])
+        self.assertEqual(before["cups"]["quantity"], after["cups"]["quantity"])
+        self.assertEqual(alex["status"], "idle")
+        self.assertIsNone(alex["current_order_id"])
 
     async def test_non_owner_cannot_prepare_or_mark_ready(self):
         world = WorldState()
@@ -289,6 +354,17 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(pending_order_id, alex_prompt)
         self.assertIn("waiting", alex_prompt)
 
+    async def test_barista_operational_snapshot_includes_low_and_out_supplies(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 1
+        world._state["supplies"]["muffins"]["quantity"] = 0
+
+        prompt = build_barista_cycle_prompt(create_shift_memory(), world, "barista_alex")
+
+        self.assertIn("Supplies:", prompt)
+        self.assertIn("Milk: low (1 left)", prompt)
+        self.assertIn("Muffins: out (0 left)", prompt)
+
     async def test_claim_conflict_metric_counts_existing_non_pending_order(self):
         world = WorldState()
         order_id = await world.place_order("cust_test", ["latte"])
@@ -361,6 +437,16 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("staff", snapshot)
         self.assertEqual(snapshot["staff"]["barista_alex"]["display_name"], "Alex")
         self.assertEqual(snapshot["staff"]["barista_jamie"]["display_name"], "Jamie")
+
+    async def test_live_snapshot_exposes_supplies(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 1
+        world._state["supplies"]["muffins"]["quantity"] = 0
+
+        snapshot = world.get_live_snapshot(active_customers=[], sim_state={"running": False})
+
+        self.assertEqual(snapshot["supplies"]["milk"]["status"], "low")
+        self.assertEqual(snapshot["supplies"]["muffins"]["status"], "out")
 
     async def test_running_agent_thinking_rows_include_staff_baristas(self):
         world = WorldState()

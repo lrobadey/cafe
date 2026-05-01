@@ -305,6 +305,20 @@ async def execute_customer_tool(
             if state.get("held_items"):
                 return "You already received your order. Consume your items or leave when ready."
             return "You already received your order."
+        if order["status"] == "failed":
+            state["visit_phase"] = "order_failed"
+            await world.update_customer_visit(customer_id, visit_phase="order_failed")
+            missing = order.get("missing_supplies", {})
+            if order.get("close_reason") == "stockout" and missing:
+                missing_text = ", ".join(
+                    f"{entry.get('name', supply_id)}"
+                    for supply_id, entry in missing.items()
+                )
+                return (
+                    f"Your order cannot be completed because the cafe is out of {missing_text}. "
+                    "You can leave or place a different order if you still want something else."
+                )
+            return "Your order cannot be completed. You can leave or ask for something else."
         return f"Unknown order status: {order['status']}."
 
     if tool_name == "wait":
