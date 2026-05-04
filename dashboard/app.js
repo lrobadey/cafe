@@ -448,19 +448,25 @@ function renderPipeline(snapshot) {
 function renderMenu(snapshot) {
   clear(menuNode);
   Object.entries(snapshot.menu).forEach(([itemId, item]) => {
-    const row = createElement("div", "menu-item");
+    const availabilityClass = item.orderable ? "orderable" : item.manually_available ? "sold-out" : "off-menu";
+    const row = createElement("div", `menu-item ${availabilityClass}`);
     const label = createElement("div");
     appendText(label, "strong", null, item.name);
     appendText(label, "div", "small muted", `${formatMoney(item.price)} - ${item.prep_seconds}s prep - ${item.category}`);
-    appendText(label, "div", "details", `${itemId} is ${item.available ? "available" : "off menu"} for incoming customers.`);
+    const availabilityText = item.orderable
+      ? "orderable for incoming customers"
+      : item.manually_available
+        ? "sold out by supplies"
+        : "off menu by toggle";
+    appendText(label, "div", "details", `${itemId} is ${availabilityText}.`);
 
     const toggleLabel = createElement("label", "menu-toggle");
     const input = document.createElement("input");
     input.type = "checkbox";
-    input.checked = item.available;
+    input.checked = item.manually_available ?? item.available;
     input.dataset.itemId = itemId;
     toggleLabel.appendChild(input);
-    toggleLabel.appendChild(document.createTextNode(item.available ? "On" : "Off"));
+    toggleLabel.appendChild(document.createTextNode(input.checked ? "On" : "Off"));
 
     row.appendChild(label);
     row.appendChild(toggleLabel);

@@ -675,6 +675,20 @@ h1 {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
+  border-left: 3px solid transparent;
+  padding-left: 6px;
+}
+
+.menu-item.sold-out {
+  border-left-color: var(--danger);
+}
+
+.menu-item.sold-out strong {
+  color: var(--danger);
+}
+
+.menu-item.off-menu {
+  opacity: 0.62;
 }
 
 .menu-toggle {

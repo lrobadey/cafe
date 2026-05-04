@@ -93,9 +93,9 @@ Then run terminal mode. You should see customer spawn, order transitions (`pendi
 
 ## Supplies
 
-Supplies are owned by `WorldState` and linked to menu recipes. Baristas can only prepare an order if the required supplies are available. If a recipe cannot be fulfilled, `prepare_order` marks the order `failed`, records the missing supplies, clears the barista's active order, and logs a stockout event.
+Supplies are owned by `WorldState` and linked to menu recipes. The live customer menu hides items that cannot currently be made from stock. Baristas still use `prepare_order` as the final physical checkpoint: if another order consumed the last required supply first, `prepare_order` marks the order `failed`, records the missing supplies, clears the barista's active order, and logs a stockout event without decrementing partial stock.
 
-Tracked supplies: coffee beans, milk, cups, cold brew servings, tea bags, and muffins. The dashboard shows current supply counts and low/out statuses.
+Tracked supplies: coffee beans, milk, cups, cold brew servings, tea bags, and muffins. The dashboard shows current supply counts, low/out statuses, and whether each menu item is orderable, sold out by supplies, or off menu by toggle. Run summaries include stockout failures and final supply status.
 | `CUSTOMER_MAX_WAIT` | `90` | Seconds before the model is nudged to consider leaving |
 | `BARISTA_POLL_INTERVAL` | `5` | Idle sleep between barista work cycles |
 

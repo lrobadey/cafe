@@ -1,4 +1,4 @@
-# CafeLab v0.2 status
+# CafeLab v0.4 status
 
 CafeLab is now a two-barista coordination simulation. Alex and Jamie run as separate async barista agents against one deterministic `WorldState`. The world owns orders, staff state, metrics, revenue, event logs, and thinking summaries. Agents still do not mutate reality directly; they request tools and the world validates every transition.
 
@@ -23,6 +23,12 @@ Implemented v0.2 pieces:
 
 5. **Run reports**
    - Reports include coordination metrics, per-barista completions, per-barista idle checks, claim conflicts by barista, conflict pair counts, and basic lifecycle durations.
+
+6. **Live supplies**
+   - Supplies are world-owned and tied to menu recipes.
+   - Customer menus hide items that cannot currently be made.
+   - `prepare_order` still performs the final deterministic stock check and fails already-placed orders cleanly if stock ran out before prep.
+   - Dashboard and run summaries show stockout failures and final supply status.
 
 Recommended next work:
 

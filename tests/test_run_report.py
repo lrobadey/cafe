@@ -140,6 +140,18 @@ class RunReporterTests(unittest.TestCase):
 
         self.assertEqual(summary["stockout_failures"], 1)
         self.assertEqual(summary["stockout_failures_by_supply"], {"milk": 1})
+        self.assertIn("final_supplies", summary)
+        self.assertIn("sold_out_supplies", summary)
+
+    def test_shift_summary_includes_final_supply_status(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 0
+
+        summary = world.get_shift_summary()
+
+        self.assertEqual(summary["final_supplies"]["milk"]["status"], "out")
+        self.assertEqual(summary["sold_out_supplies"]["milk"]["name"], "Milk")
+        self.assertNotIn("coffee_beans", summary["sold_out_supplies"])
 
     def test_reporter_accepts_final_snapshot_and_alerts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

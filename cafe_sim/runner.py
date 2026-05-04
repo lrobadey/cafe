@@ -134,6 +134,13 @@ async def run_simulation():
         log_event("RUNNER", f"Orders created: {summary['orders_created']}")
         log_event("RUNNER", f"Orders delivered: {summary['orders_delivered']}")
         log_event("RUNNER", f"Orders not delivered: {summary['orders_not_delivered']}")
+        log_event("RUNNER", f"Stockout failures: {summary['stockout_failures']}")
+        sold_out = summary.get("sold_out_supplies", {})
+        if sold_out:
+            sold_out_names = ", ".join(supply["name"] for supply in sold_out.values())
+            log_event("RUNNER", f"Sold out supplies: {sold_out_names}")
+        else:
+            log_event("RUNNER", "Sold out supplies: none")
         average_wait = summary["average_wait_seconds"]
         average_wait_display = f"{average_wait}s" if average_wait is not None else "n/a"
         log_event("RUNNER", f"Average wait: {average_wait_display}")

@@ -90,8 +90,16 @@ class WorldState:
             "revenue": 0.0,
         }
 
+    def can_make_menu_item(self, item_id: str) -> bool:
+        requirements = self._get_recipe_requirements([item_id])
+        return not self._get_missing_supplies(requirements)
+
     def get_menu(self) -> dict:
-        return {k: v for k, v in self._state["menu"].items() if v["available"]}
+        return {
+            k: dict(v)
+            for k, v in self._state["menu"].items()
+            if v["available"] and self.can_make_menu_item(k)
+        }
 
     def get_table_availability(self) -> dict:
         return {tid: t["status"] for tid, t in self._state["tables"].items()}
@@ -296,6 +304,12 @@ class WorldState:
             for order in orders
             if order.get("ready_at") and order.get("preparing_at")
         ]
+        final_supplies = self.get_supplies()
+        sold_out_supplies = {
+            supply_id: supply
+            for supply_id, supply in final_supplies.items()
+            if supply["status"] == "out"
+        }
 
         return {
             "revenue": round(self._state["revenue"], 2),
@@ -307,6 +321,8 @@ class WorldState:
             "orders_not_delivered": len(orders) - len(delivered),
             "stockout_failures": len(stockout_failures),
             "stockout_failures_by_supply": failures_by_supply,
+            "final_supplies": final_supplies,
+            "sold_out_supplies": sold_out_supplies,
             "customers_consumed_items": len(visits_with_consumed_items),
             "items_consumed": sum(len(visit.get("consumed_items", [])) for visit in visits),
             "customers_left_with_unconsumed_items": len(visits_left_with_unconsumed),
@@ -538,6 +554,9 @@ class WorldState:
                 "prep_seconds": item["prep_seconds"],
                 "category": item.get("category"),
                 "available": item["available"],
+                "manually_available": item["available"],
+                "stock_available": self.can_make_menu_item(item_id),
+                "orderable": item["available"] and self.can_make_menu_item(item_id),
             }
             for item_id, item in self._state["menu"].items()
         }

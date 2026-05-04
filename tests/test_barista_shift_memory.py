@@ -213,6 +213,38 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(after["milk"]["quantity"], before["milk"]["quantity"] - 1)
         self.assertEqual(after["cups"]["quantity"], before["cups"]["quantity"] - 1)
 
+    async def test_menu_hides_items_that_cannot_be_made_from_stock(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 0
+
+        menu = world.get_menu()
+
+        self.assertNotIn("latte", menu)
+        self.assertIn("espresso", menu)
+
+    async def test_menu_hides_manually_disabled_items_even_when_stocked(self):
+        world = WorldState()
+        world.set_menu_item_availability("espresso", False)
+
+        menu = world.get_menu()
+
+        self.assertNotIn("espresso", menu)
+
+    async def test_shared_supply_consumption_removes_new_orders_from_menu(self):
+        world = WorldState()
+        world._state["supplies"]["cups"]["quantity"] = 1
+        order_id = await world.place_order("cust_test", ["espresso"])
+        await world.claim_order("barista_alex", order_id)
+
+        result = await world.prepare_order("barista_alex", order_id)
+        menu = world.get_menu()
+
+        self.assertTrue(result["ok"])
+        self.assertNotIn("latte", menu)
+        self.assertNotIn("tea", menu)
+        self.assertNotIn("cold_brew", menu)
+        self.assertIn("muffin", menu)
+
     async def test_prepare_order_aggregates_multi_item_recipe_supplies(self):
         world = WorldState()
         order_id = await world.place_order("cust_test", ["latte", "muffin"])
@@ -447,6 +479,21 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(snapshot["supplies"]["milk"]["status"], "low")
         self.assertEqual(snapshot["supplies"]["muffins"]["status"], "out")
+
+    async def test_live_snapshot_exposes_stock_aware_menu_state(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 0
+        world.set_menu_item_availability("tea", False)
+
+        snapshot = world.get_live_snapshot(active_customers=[], sim_state={"running": False})
+
+        self.assertFalse(snapshot["menu"]["latte"]["stock_available"])
+        self.assertTrue(snapshot["menu"]["latte"]["manually_available"])
+        self.assertFalse(snapshot["menu"]["latte"]["orderable"])
+        self.assertTrue(snapshot["menu"]["tea"]["stock_available"])
+        self.assertFalse(snapshot["menu"]["tea"]["manually_available"])
+        self.assertFalse(snapshot["menu"]["tea"]["orderable"])
+        self.assertTrue(snapshot["menu"]["espresso"]["orderable"])
 
     async def test_running_agent_thinking_rows_include_staff_baristas(self):
         world = WorldState()
