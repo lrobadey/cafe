@@ -92,8 +92,8 @@ class CustomerWaitToolTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_check_order_reports_stockout_failure(self):
         world = WorldState()
-        world._state["supplies"]["milk"]["quantity"] = 0
         order_id = await world.place_order("cust_test", ["latte"])
+        world._state["supplies"]["milk"]["quantity"] = 0
         await world.claim_order("barista_alex", order_id)
         await world.prepare_order("barista_alex", order_id)
         state = {
@@ -111,6 +111,22 @@ class CustomerWaitToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Milk", result)
         self.assertEqual(state["visit_phase"], "order_failed")
         self.assertEqual(world.get_customer_visit("cust_test")["visit_phase"], "order_failed")
+
+    async def test_place_order_rejects_newly_stocked_out_menu_item(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 0
+        state = {
+            "order_id": None,
+            "table_id": None,
+            "done": False,
+            "arrived_at": time.time(),
+        }
+
+        result = await execute_customer_tool("place_order", {"items": ["latte"]}, "cust_test", world, state)
+
+        self.assertIn("not on the menu", result)
+        self.assertIsNone(state["order_id"])
+        self.assertEqual(world.queue_length(), 0)
 
     async def test_sip_drink_succeeds_for_held_drink(self):
         world = WorldState()

@@ -94,11 +94,44 @@ class WorldState:
         requirements = self._get_recipe_requirements([item_id])
         return not self._get_missing_supplies(requirements)
 
+    def get_menu_item_availability(self, item_id: str) -> Optional[dict]:
+        item = self._state["menu"].get(item_id)
+        if not item:
+            return None
+        missing_supplies = self._get_missing_supplies(self._get_recipe_requirements([item_id]))
+        manually_available = item["available"]
+        stock_available = not missing_supplies
+        return {
+            "name": item["name"],
+            "price": item["price"],
+            "prep_seconds": item["prep_seconds"],
+            "category": item.get("category"),
+            "available": manually_available and stock_available,
+            "manually_available": manually_available,
+            "stock_available": stock_available,
+            "orderable": manually_available and stock_available,
+            "missing_supplies": missing_supplies,
+        }
+
+    def get_menu_availability(self) -> dict:
+        return {
+            item_id: availability
+            for item_id in self._state["menu"]
+            for availability in [self.get_menu_item_availability(item_id)]
+            if availability is not None
+        }
+
     def get_menu(self) -> dict:
         return {
-            k: dict(v)
-            for k, v in self._state["menu"].items()
-            if v["available"] and self.can_make_menu_item(k)
+            item_id: {
+                "name": item["name"],
+                "price": item["price"],
+                "prep_seconds": item["prep_seconds"],
+                "category": item.get("category"),
+                "available": item["orderable"],
+            }
+            for item_id, item in self.get_menu_availability().items()
+            if item["orderable"]
         }
 
     def get_table_availability(self) -> dict:
@@ -258,6 +291,13 @@ class WorldState:
 
     async def place_order(self, customer_id: str, items: list[str]) -> str:
         order_id = f"ord_{uuid.uuid4().hex[:6]}"
+        menu = self.get_menu_availability()
+        unavailable = [item for item in items if item not in menu or not menu[item]["orderable"]]
+        if unavailable:
+            raise ValueError(f"These item IDs are not on the menu: {unavailable}.")
+        missing = self._get_missing_supplies(self._get_recipe_requirements(items))
+        if missing:
+            raise ValueError(f"Could not place order. Missing supplies: {self._format_missing_supplies(missing)}.")
         total_price = sum(self._state["menu"][item]["price"] for item in items)
         order = {
             "order_id": order_id,
@@ -547,19 +587,7 @@ class WorldState:
             }
             for order in self._state["order_queue"]
         ]
-        menu = {
-            item_id: {
-                "name": item["name"],
-                "price": item["price"],
-                "prep_seconds": item["prep_seconds"],
-                "category": item.get("category"),
-                "available": item["available"],
-                "manually_available": item["available"],
-                "stock_available": self.can_make_menu_item(item_id),
-                "orderable": item["available"] and self.can_make_menu_item(item_id),
-            }
-            for item_id, item in self._state["menu"].items()
-        }
+        menu = self.get_menu_availability()
         return {
             "simulation": dict(sim_state),
             "metrics": self.get_shift_summary(),

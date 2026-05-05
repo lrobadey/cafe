@@ -458,7 +458,13 @@ function renderMenu(snapshot) {
       : item.manually_available
         ? "sold out by supplies"
         : "off menu by toggle";
-    appendText(label, "div", "details", `${itemId} is ${availabilityText}.`);
+    const missingSupplies = Object.values(item.missing_supplies || {})
+      .map((supply) => supply.name || "supply")
+      .join(", ");
+    const statusText = missingSupplies
+      ? `${availabilityText}: ${missingSupplies}`
+      : availabilityText;
+    appendText(label, "div", "menu-status", statusText);
 
     const toggleLabel = createElement("label", "menu-toggle");
     const input = document.createElement("input");

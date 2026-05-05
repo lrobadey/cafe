@@ -672,11 +672,11 @@ h1 {
 
 .menu-item {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 8px;
-  align-items: center;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+  align-items: start;
   border-left: 3px solid transparent;
-  padding-left: 6px;
+  padding: 6px 0 6px 8px;
 }
 
 .menu-item.sold-out {
@@ -691,13 +691,42 @@ h1 {
   opacity: 0.62;
 }
 
+.menu-status {
+  display: inline-block;
+  margin-top: 4px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 2px 6px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.menu-item.orderable .menu-status {
+  border-color: var(--accent-soft);
+  color: var(--accent);
+}
+
+.menu-item.sold-out .menu-status {
+  border-color: rgba(181, 71, 54, 0.3);
+  color: var(--danger);
+}
+
 .menu-toggle {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: 5px;
   color: var(--muted);
   font-size: 0.73rem;
-  white-space: nowrap;
+  line-height: 1.25;
+  text-align: left;
+  white-space: normal;
+}
+
+.menu-item.sold-out .menu-toggle {
+  color: var(--danger);
+  font-weight: 700;
 }
 
 @keyframes thought-arrive {

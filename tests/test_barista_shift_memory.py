@@ -245,6 +245,24 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("cold_brew", menu)
         self.assertIn("muffin", menu)
 
+    async def test_place_order_rejects_stocked_out_items(self):
+        world = WorldState()
+        world._state["supplies"]["milk"]["quantity"] = 0
+
+        with self.assertRaisesRegex(ValueError, "not on the menu"):
+            await world.place_order("cust_test", ["latte"])
+
+        self.assertEqual(world.queue_length(), 0)
+
+    async def test_place_order_rejects_aggregate_supply_shortage(self):
+        world = WorldState()
+        world._state["supplies"]["cups"]["quantity"] = 1
+
+        with self.assertRaisesRegex(ValueError, "Missing supplies"):
+            await world.place_order("cust_test", ["espresso", "tea"])
+
+        self.assertEqual(world.queue_length(), 0)
+
     async def test_prepare_order_aggregates_multi_item_recipe_supplies(self):
         world = WorldState()
         order_id = await world.place_order("cust_test", ["latte", "muffin"])
@@ -262,8 +280,8 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_stockout_fails_order_without_partial_supply_decrement(self):
         world = WorldState()
-        world._state["supplies"]["milk"]["quantity"] = 0
         order_id = await world.place_order("cust_test", ["latte"])
+        world._state["supplies"]["milk"]["quantity"] = 0
         await world.claim_order("barista_alex", order_id)
         before = world.get_supplies()
 
@@ -490,9 +508,11 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(snapshot["menu"]["latte"]["stock_available"])
         self.assertTrue(snapshot["menu"]["latte"]["manually_available"])
         self.assertFalse(snapshot["menu"]["latte"]["orderable"])
+        self.assertIn("milk", snapshot["menu"]["latte"]["missing_supplies"])
         self.assertTrue(snapshot["menu"]["tea"]["stock_available"])
         self.assertFalse(snapshot["menu"]["tea"]["manually_available"])
         self.assertFalse(snapshot["menu"]["tea"]["orderable"])
+        self.assertEqual(snapshot["menu"]["tea"]["missing_supplies"], {})
         self.assertTrue(snapshot["menu"]["espresso"]["orderable"])
 
     async def test_running_agent_thinking_rows_include_staff_baristas(self):
