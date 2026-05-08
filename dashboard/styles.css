@@ -83,7 +83,7 @@ p {
   margin: 0 auto;
   padding: 16px 18px;
   display: grid;
-  grid-template-rows: auto auto minmax(0, 1fr);
+  grid-template-rows: auto auto auto minmax(0, 1fr);
   gap: 10px;
 }
 
@@ -112,6 +112,12 @@ h1 {
   font-size: 0.86rem;
 }
 
+.campaign-line {
+  color: var(--ink);
+  font-size: 0.9rem;
+  font-weight: 850;
+}
+
 .status-line.ok {
   color: var(--accent);
 }
@@ -130,11 +136,136 @@ h1 {
 
 .kpis {
   display: grid;
-  grid-template-columns: 1.1fr repeat(6, 1fr) 0.9fr 1.25fr 1.35fr 1.35fr;
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgba(255, 250, 241, 0.78);
   overflow: hidden;
+}
+
+.campaign-panel {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(260px, 1.1fr) minmax(280px, 1fr) minmax(300px, 1fr);
+  gap: 10px;
+}
+
+.day-timeline,
+.day-summary,
+.planning-panel {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(255, 250, 241, 0.82);
+  padding: 9px;
+}
+
+.day-timeline {
+  display: flex;
+  gap: 7px;
+  overflow: auto;
+}
+
+.day-chip {
+  flex: 0 0 112px;
+  display: grid;
+  gap: 3px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.8);
+  padding: 7px 8px;
+}
+
+.day-chip.active {
+  border-color: rgba(50, 116, 71, 0.5);
+  background: var(--accent-soft);
+}
+
+.warning-dot {
+  color: var(--warn);
+  font-size: 0.71rem;
+  font-weight: 850;
+}
+
+.summary-head,
+.summary-grid,
+.restock-grid,
+.restock-row {
+  min-width: 0;
+}
+
+.summary-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.summary-grid {
+  margin-top: 7px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.summary-metric {
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.82);
+  padding: 5px 6px;
+}
+
+.summary-metric span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.summary-metric strong {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.84rem;
+}
+
+.summary-warnings {
+  margin-top: 7px;
+  display: grid;
+  gap: 3px;
+  color: var(--warn);
+  font-size: 0.73rem;
+  line-height: 1.25;
+}
+
+.planning-panel {
+  display: grid;
+  gap: 7px;
+}
+
+.restock-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+}
+
+.restock-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(255, 253, 248, 0.74);
+  padding: 5px 6px;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.restock-btn {
+  min-height: 24px;
+  padding: 2px 7px;
 }
 
 .chip {
@@ -759,6 +890,10 @@ h1 {
 
   .workspace {
     grid-template-columns: minmax(680px, 1fr) 330px;
+  }
+
+  .campaign-panel {
+    grid-template-columns: 1fr;
   }
 
   .floor-plan {

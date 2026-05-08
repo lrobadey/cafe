@@ -7,6 +7,7 @@ import uuid
 from typing import Optional
 
 from agents.barista import BARISTA_ROSTER, run_barista
+from campaign import CampaignState
 from agents.customer import run_customer
 from config import (
     CLOSING_GRACE_SECONDS,
@@ -23,7 +24,8 @@ from world import WorldState
 
 class SimulationController:
     def __init__(self):
-        self.world = WorldState()
+        self.campaign = CampaignState.new_campaign()
+        self.world = self._new_world_for_current_day()
         self.spawn_interval = CUSTOMER_SPAWN_INTERVAL
         self.spawn_jitter = CUSTOMER_SPAWN_JITTER
         self.sim_duration = SIM_DURATION
@@ -36,14 +38,38 @@ class SimulationController:
         self._barista_tasks: dict[str, asyncio.Task] = {}
         self._runner_task: Optional[asyncio.Task] = None
         self._reporter: Optional[RunReporter] = None
+        self._last_closeout: Optional[dict] = None
+        self._last_final_snapshot: Optional[dict] = None
+        self._last_alerts: list[dict] = []
+        self._last_report_paths: dict = {}
         self._lock = asyncio.Lock()
 
     async def start(self):
         async with self._lock:
             if self.phase in {"running", "closing"}:
                 return
-            self._reporter = RunReporter()
+            if self.campaign.current_day.phase == "settled":
+                return
+            if self.phase in {"idle", "stopped"} and self.campaign.current_day.phase == "planning":
+                self.world = self._new_world_for_current_day()
+            self.campaign.begin_day(
+                {
+                    "spawn_interval": self.spawn_interval,
+                    "sim_duration": self.sim_duration,
+                    "max_concurrent_customers": self.max_concurrent_customers,
+                }
+            )
+            self._reporter = RunReporter(
+                campaign_id=self.campaign.campaign_id,
+                day_id=self.campaign.current_day.day_id,
+                day_index=self.campaign.current_day.day_index,
+            )
             self.world.attach_reporter(self._reporter)
+            self._attach_world_context()
+            self._last_closeout = None
+            self._last_final_snapshot = None
+            self._last_alerts = []
+            self._last_report_paths = {}
             self.running = True
             self.phase = "running"
             self.started_at = time.time()
@@ -71,11 +97,48 @@ class SimulationController:
     async def stop(self, reason: str = "manual_stop"):
         await self._complete_stop(reason)
 
+    async def close_day(self):
+        if self.phase in {"running", "closing"}:
+            self.campaign.begin_closing()
+            await self._complete_stop("day_closed")
+            return True
+        if self.phase == "stopped" and self.campaign.current_day.phase != "settled":
+            return self.settle_day()
+        return False
+
+    def settle_day(self) -> bool:
+        if self.campaign.current_day.phase == "settled":
+            return True
+        if self.phase == "running":
+            return False
+        if not self._last_closeout or not self._last_final_snapshot:
+            return False
+        self._settle_current_day()
+        return True
+
+    def advance_day(self) -> bool:
+        if self.phase in {"running", "closing"}:
+            return False
+        if self.campaign.current_day.phase != "settled":
+            return False
+        self.campaign.advance_to_next_day()
+        self.world = self._new_world_for_current_day()
+        self.phase = "idle"
+        self.running = False
+        self.started_at = None
+        self.spawn_count = 0
+        self._last_closeout = None
+        self._last_final_snapshot = None
+        self._last_alerts = []
+        self._last_report_paths = {}
+        return True
+
     async def _begin_closing(self, reason: str):
         async with self._lock:
             if self.phase != "running":
                 return
             self.phase = "closing"
+            self.campaign.begin_closing()
             self.world.report(
                 "RUNNER",
                 "run_closing",
@@ -113,13 +176,21 @@ class SimulationController:
         if tasks_to_await:
             await asyncio.gather(*tasks_to_await, return_exceptions=True)
         closeout = await self.world.closeout_unresolved(reason)
-        self._finish_report(reason, closeout)
+        final_snapshot = self._finish_report(reason, closeout)
+        self._last_closeout = closeout
+        self._last_final_snapshot = final_snapshot
+        if reason in {"duration_complete", "day_closed"}:
+            self._settle_current_day()
         log_event("RUNNER", "Dashboard simulation stopped.")
 
     async def reset(self):
         await self.stop()
         async with self._lock:
-            self.world = WorldState()
+            if self.campaign.current_day.phase != "settled":
+                self.campaign.current_day.phase = "planning"
+                self.campaign.status = "planning"
+                self.campaign.save()
+            self.world = self._new_world_for_current_day()
             self.phase = "idle"
             self.running = False
             self.started_at = None
@@ -185,7 +256,18 @@ class SimulationController:
         self.sim_duration = max(10, int(value))
 
     def toggle_menu_item(self, item_id: str, available: bool) -> bool:
-        return self.world.set_menu_item_availability(item_id, available)
+        changed = self.world.set_menu_item_availability(item_id, available)
+        if changed:
+            self.campaign.update_menu_availability(item_id, available)
+        return changed
+
+    def restock_supply(self, supply_id: str, quantity: int) -> dict:
+        if self.phase in {"running", "closing"}:
+            return {"ok": False, "error": "Restocking is only available outside live service."}
+        result = self.campaign.restock(supply_id, quantity)
+        if result.get("ok"):
+            self.world.restock_supply(supply_id, quantity)
+        return result
 
     def get_simulation_state(self) -> dict:
         elapsed = int(time.time() - self.started_at) if self.started_at else 0
@@ -213,6 +295,37 @@ class SimulationController:
             )
         return customers
 
+    def get_snapshot(self) -> dict:
+        sim_state = self.get_simulation_state()
+        snapshot = self.world.get_live_snapshot(
+            active_customers=self.get_active_customers(),
+            sim_state=sim_state,
+        )
+        snapshot.update(
+            {
+                "campaign": self.campaign.campaign_snapshot(),
+                "calendar": self.campaign.calendar_snapshot(
+                    elapsed_seconds=sim_state["elapsed_seconds"],
+                    sim_duration=sim_state["sim_duration"],
+                ),
+                "day_summary": self.campaign.current_day.summary,
+                "history": self.campaign.history_snapshot(),
+            }
+        )
+        return snapshot
+
+    def get_events(self, after_index: int, limit: int = 100, day_id: Optional[str] = None, campaign_id: Optional[str] = None) -> dict:
+        raw_events = self.world.get_recent_events(after_index=after_index, limit=limit)
+        events = raw_events
+        if day_id:
+            events = [event for event in events if event.get("day_id") == day_id]
+        if campaign_id:
+            events = [event for event in events if event.get("campaign_id") == campaign_id]
+        return {
+            "events": events,
+            "next_cursor": after_index + len(raw_events),
+        }
+
     async def _run_loop(self):
         try:
             while self.running and self.phase == "running":
@@ -227,9 +340,12 @@ class SimulationController:
         except asyncio.CancelledError:
             pass
 
-    def _finish_report(self, reason: str, closeout: dict):
+    def _finish_report(self, reason: str, closeout: dict) -> dict:
+        final_snapshot = self.get_snapshot()
         if not self._reporter:
-            return
+            self._last_alerts = self.world.get_run_alerts(closeout)
+            self._last_report_paths = {}
+            return final_snapshot
         alerts = self.world.get_run_alerts(closeout)
         summary = {
             **self.world.get_shift_summary(),
@@ -237,12 +353,55 @@ class SimulationController:
             "duration_seconds": int(time.time() - self.started_at) if self.started_at else 0,
             "stop_reason": reason,
         }
-        final_snapshot = self.world.get_live_snapshot(
-            active_customers=self.get_active_customers(),
-            sim_state=self.get_simulation_state(),
-        )
         self.world.report("RUNNER", "run_stopped", summary)
         final_status = "completed" if reason == "duration_complete" else "stopped"
         self._reporter.close(final_status, summary, final_snapshot=final_snapshot, alerts=alerts)
+        self._last_alerts = alerts
+        self._last_report_paths = {
+            key: str(value)
+            for key, value in {
+                "report_dir": getattr(self._reporter, "report_dir", None),
+                "events_path": getattr(self._reporter, "events_path", None),
+                "summary_path": getattr(self._reporter, "summary_path", None),
+            }.items()
+            if value is not None
+        }
         self.world.attach_reporter(None)
         self._reporter = None
+        return final_snapshot
+
+    def _settle_current_day(self):
+        if self.campaign.current_day.phase == "settled" or not self._last_final_snapshot:
+            return
+        self.campaign.settle_current_day(
+            metrics=self.world.get_shift_summary(),
+            closeout=self._last_closeout or {},
+            final_snapshot=self._last_final_snapshot,
+            events=self.world.get_recent_events(after_index=0, limit=10000),
+            alerts=self._last_alerts,
+            report_paths=self._last_report_paths,
+        )
+
+    def _new_world_for_current_day(self) -> WorldState:
+        world = WorldState(
+            initial_supplies=self.campaign.persistent_supplies,
+            initial_menu=self.campaign.menu_state,
+        )
+        self._attach_world_context(world)
+        return world
+
+    def _attach_world_context(self, world: Optional[WorldState] = None):
+        target = world or self.world
+        target.set_event_context(
+            campaign_id=self.campaign.campaign_id,
+            day_id=self.campaign.current_day.day_id,
+            day_index=self.campaign.current_day.day_index,
+            sim_time_provider=self._current_sim_time,
+        )
+
+    def _current_sim_time(self) -> str:
+        sim_state = self.get_simulation_state()
+        return self.campaign.calendar_snapshot(
+            elapsed_seconds=sim_state["elapsed_seconds"],
+            sim_duration=sim_state["sim_duration"],
+        )["sim_current_time"]

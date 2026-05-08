@@ -11,15 +11,27 @@
     <header class="topbar">
       <div class="title-block">
         <h1>Cafe Control Room</h1>
-        <div id="status-line" class="status-line">Connecting...</div>
+        <div>
+          <div id="campaign-line" class="campaign-line">Loading campaign...</div>
+          <div id="status-line" class="status-line">Connecting...</div>
+        </div>
       </div>
       <div class="top-actions">
         <button id="start-btn">Start</button>
         <button id="spawn-btn" class="secondary">Spawn</button>
+        <button id="close-day-btn" class="secondary">Close Day</button>
+        <button id="settle-day-btn" class="ghost">Settle</button>
+        <button id="advance-day-btn" class="ghost">Next Day</button>
         <button id="stop-btn" class="ghost">Stop</button>
         <button id="reset-btn" class="ghost">Reset</button>
       </div>
     </header>
+
+    <section class="campaign-panel">
+      <div id="day-timeline" class="day-timeline"></div>
+      <div id="day-summary" class="day-summary"></div>
+      <div id="planning-panel" class="planning-panel"></div>
+    </section>
 
     <section class="kpis" id="kpis"></section>
 
@@ -87,6 +99,6 @@
     </main>
   </div>
 
-  <script src="/app.js?v=stockout-menu-availability"></script>
+  <script src="/app.js?v=multi-day-campaign"></script>
 </body>
 </html>

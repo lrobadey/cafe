@@ -3,7 +3,7 @@
 import asyncio
 import time
 import uuid
-from typing import Optional
+from typing import Callable, Optional
 
 from config import MENU, MENU_RECIPES, SUPPLIES, TABLE_IDS
 from logger import log_event
@@ -46,12 +46,24 @@ UNRESOLVED_ORDER_STATUSES = {ORDER_PENDING, ORDER_CLAIMED, ORDER_PREPARING, ORDE
 
 
 class WorldState:
-    def __init__(self, reporter: Optional[RunReporter] = None):
+    def __init__(
+        self,
+        reporter: Optional[RunReporter] = None,
+        *,
+        initial_supplies: Optional[dict] = None,
+        initial_menu: Optional[dict] = None,
+    ):
         self._lock = asyncio.Lock()
         self.reporter = reporter
+        self._event_context = {
+            "campaign_id": None,
+            "day_id": None,
+            "day_index": None,
+            "sim_time_provider": None,
+        }
         self._state = {
-            "menu": {k: dict(v) for k, v in MENU.items()},
-            "supplies": {k: dict(v) for k, v in SUPPLIES.items()},
+            "menu": {k: dict(v) for k, v in (initial_menu or MENU).items()},
+            "supplies": {k: dict(v) for k, v in (initial_supplies or SUPPLIES).items()},
             "tables": {tid: {"status": "empty", "customer_id": None} for tid in TABLE_IDS},
             "order_queue": [],
             "event_log": [],
@@ -525,6 +537,14 @@ class WorldState:
         self.log("RUNNER", "menu_availability", f"{item_id} -> {available}")
         return True
 
+    def restock_supply(self, supply_id: str, quantity: int) -> bool:
+        supply = self._state["supplies"].get(supply_id)
+        if not supply:
+            return False
+        supply["quantity"] = int(supply.get("quantity", 0)) + max(0, int(quantity))
+        self.log("RUNNER", "restock", f"{supply_id} +{quantity}")
+        return True
+
     def get_live_snapshot(self, active_customers: list[dict], sim_state: dict) -> dict:
         customer_by_id = {}
         for customer in active_customers:
@@ -781,6 +801,21 @@ class WorldState:
     def attach_reporter(self, reporter: Optional[RunReporter]):
         self.reporter = reporter
 
+    def set_event_context(
+        self,
+        *,
+        campaign_id: Optional[str] = None,
+        day_id: Optional[str] = None,
+        day_index: Optional[int] = None,
+        sim_time_provider: Optional[Callable[[], str]] = None,
+    ):
+        self._event_context = {
+            "campaign_id": campaign_id,
+            "day_id": day_id,
+            "day_index": day_index,
+            "sim_time_provider": sim_time_provider,
+        }
+
     def report(self, source: str, event_type: str, payload: Optional[dict] = None):
         if self.reporter:
             self.reporter.event(source, event_type, payload or {})
@@ -970,7 +1005,16 @@ class WorldState:
         self.log("barista", "delivered", order_id)
 
     def log(self, agent_id: str, action: str, detail: str):
-        entry = {"t": time.time(), "agent": agent_id, "action": action, "detail": detail}
+        context = {
+            "campaign_id": self._event_context.get("campaign_id"),
+            "day_id": self._event_context.get("day_id"),
+            "day_index": self._event_context.get("day_index"),
+        }
+        sim_time_provider = self._event_context.get("sim_time_provider")
+        if sim_time_provider:
+            context["sim_time"] = sim_time_provider()
+        context = {key: value for key, value in context.items() if value is not None}
+        entry = {"t": time.time(), "agent": agent_id, "action": action, "detail": detail, **context}
         self._state["event_log"].append(entry)
         self.report(
             agent_id,
@@ -979,6 +1023,7 @@ class WorldState:
                 "agent": agent_id,
                 "action": action,
                 "detail": detail,
+                **context,
                 "world_event_index": len(self._state["event_log"]),
             },
         )

@@ -9,6 +9,10 @@ const state = {
 };
 
 const statusLine = document.getElementById("status-line");
+const campaignLineNode = document.getElementById("campaign-line");
+const dayTimelineNode = document.getElementById("day-timeline");
+const daySummaryNode = document.getElementById("day-summary");
+const planningPanelNode = document.getElementById("planning-panel");
 const kpisNode = document.getElementById("kpis");
 const tablesNode = document.getElementById("tables");
 const activeCustomersNode = document.getElementById("active-customers");
@@ -23,6 +27,9 @@ const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
 const resetBtn = document.getElementById("reset-btn");
 const spawnBtn = document.getElementById("spawn-btn");
+const closeDayBtn = document.getElementById("close-day-btn");
+const settleDayBtn = document.getElementById("settle-day-btn");
+const advanceDayBtn = document.getElementById("advance-day-btn");
 const saveSettingsBtn = document.getElementById("save-settings-btn");
 const spawnIntervalInput = document.getElementById("spawn-interval");
 const simDurationInput = document.getElementById("sim-duration");
@@ -181,6 +188,9 @@ function renderStatus() {
   state.notice = null;
   statusLine.className = "status-line";
   const sim = state.snapshot.simulation;
+  const campaign = state.snapshot.campaign;
+  const calendar = state.snapshot.calendar;
+  campaignLineNode.textContent = `${campaign.cafe_name} - Day ${calendar.day_index} - ${calendar.date_label} - ${calendar.sim_current_time} - ${calendar.phase}`;
   if (sim.phase === "closing") {
     statusLine.textContent = `Closing - ${sim.elapsed_seconds}s elapsed - ${sim.spawn_count} spawned`;
   } else if (sim.running) {
@@ -188,6 +198,95 @@ function renderStatus() {
   } else {
     statusLine.textContent = "Stopped - ready for operator input";
   }
+}
+
+function renderCampaign(snapshot) {
+  const campaign = snapshot.campaign;
+  const calendar = snapshot.calendar;
+  const history = snapshot.history || {};
+
+  clear(dayTimelineNode);
+  (history.timeline || []).forEach((day) => {
+    const chip = createElement("div", `day-chip${day.active ? " active" : ""}`);
+    appendText(chip, "strong", null, `Day ${day.day_index}`);
+    appendText(chip, "span", null, day.phase === "settled" ? formatMoney(day.profit) : calendar.phase);
+    appendText(chip, "span", "small muted", `${day.customers_served ?? 0} served`);
+    if (day.warnings) {
+      appendText(chip, "span", "warning-dot", `${day.warnings} alert`);
+    }
+    dayTimelineNode.appendChild(chip);
+  });
+
+  renderDaySummary(snapshot);
+  renderPlanning(snapshot);
+}
+
+function renderDaySummary(snapshot) {
+  clear(daySummaryNode);
+  const campaign = snapshot.campaign;
+  const summary = snapshot.day_summary;
+  const head = createElement("div", "summary-head");
+  appendText(head, "strong", null, `Cash ${formatMoney(campaign.money)}`);
+  appendText(head, "span", null, `Reputation ${campaign.reputation}`);
+  daySummaryNode.appendChild(head);
+
+  if (!summary) {
+    appendText(daySummaryNode, "div", "small muted", "No settled day yet.");
+    return;
+  }
+
+  const rows = [
+    ["Revenue", formatMoney(summary.revenue)],
+    ["Supply costs", formatMoney(summary.supply_costs)],
+    ["Profit", formatMoney(summary.profit)],
+    ["Served", String(summary.customers_served)],
+    ["Lost", String(summary.customers_lost)],
+    ["Satisfaction", `${summary.satisfaction}/100`],
+    ["Reputation", `${summary.reputation_delta >= 0 ? "+" : ""}${summary.reputation_delta}`],
+  ];
+  const grid = createElement("div", "summary-grid");
+  rows.forEach(([label, value]) => {
+    const item = createElement("div", "summary-metric");
+    appendText(item, "span", null, label);
+    appendText(item, "strong", null, value);
+    grid.appendChild(item);
+  });
+  daySummaryNode.appendChild(grid);
+
+  if ((summary.tomorrow_warnings || []).length) {
+    const warnings = createElement("div", "summary-warnings");
+    summary.tomorrow_warnings.slice(0, 3).forEach((warning) => appendText(warnings, "div", null, warning));
+    daySummaryNode.appendChild(warnings);
+  }
+}
+
+function renderPlanning(snapshot) {
+  clear(planningPanelNode);
+  const calendar = snapshot.calendar;
+  const sim = snapshot.simulation;
+  const locked = sim.running || sim.phase === "closing" || calendar.phase === "settled";
+  appendText(planningPanelNode, "strong", null, calendar.phase === "settled" ? "Ready for tomorrow" : "Planning");
+
+  const controls = createElement("div", "restock-grid");
+  Object.entries(snapshot.supplies || {}).forEach(([supplyId, supply]) => {
+    const row = createElement("div", `restock-row ${supply.status || "normal"}`);
+    appendText(row, "span", null, `${supply.name || supplyId}: ${supply.quantity}`);
+    const button = createElement("button", "ghost restock-btn", "+5");
+    button.disabled = locked;
+    button.dataset.supplyId = supplyId;
+    row.appendChild(button);
+    controls.appendChild(row);
+  });
+  planningPanelNode.appendChild(controls);
+
+  planningPanelNode.querySelectorAll(".restock-btn").forEach((button) => {
+    button.addEventListener("click", () =>
+      runControl(
+        () => api("/api/restock", "POST", { supply_id: button.dataset.supplyId, quantity: 5 }),
+        `Restocked ${button.dataset.supplyId}.`
+      )
+    );
+  });
 }
 
 function renderKpis(snapshot) {
@@ -206,6 +305,9 @@ function renderKpis(snapshot) {
     .map(([staffId, staff]) => `${staff.display_name} ${metrics.claim_conflicts_by_barista?.[staffId] ?? 0}`)
     .join(" / ");
   const chips = [
+    ["Day", `${snapshot.calendar.day_index} ${snapshot.calendar.phase}`],
+    ["Cash", formatMoney(snapshot.campaign.money)],
+    ["Rep", String(snapshot.campaign.reputation)],
     ["Revenue", formatMoney(metrics.revenue)],
     ["Open orders", String(openOrders)],
     ["Tables", `${occupiedTables}/${snapshot.tables.length}`],
@@ -509,7 +611,7 @@ function renderEvents() {
     const left = createElement("div");
     appendText(left, "div", "event-agent", event.agent);
     appendText(left, "div", "event-action", event.action);
-    appendText(head, "span", "event-time", formatTime(event.t));
+    appendText(head, "span", "event-time", event.sim_time || formatTime(event.t));
     head.appendChild(left);
     row.appendChild(head);
     appendText(row, "div", "details", event.detail);
@@ -521,12 +623,17 @@ function renderEvents() {
 function renderSnapshot(snapshot) {
   state.snapshot = snapshot;
   const sim = snapshot.simulation;
+  const calendar = snapshot.calendar;
 
   spawnIntervalInput.value = sim.spawn_interval;
   simDurationInput.value = sim.sim_duration;
-  startBtn.disabled = sim.phase === "running" || sim.phase === "closing";
+  startBtn.textContent = calendar.day_index > 1 ? "Start Day" : "Start";
+  startBtn.disabled = sim.phase === "running" || sim.phase === "closing" || calendar.phase === "settled";
   stopBtn.disabled = sim.phase !== "running" && sim.phase !== "closing";
   spawnBtn.disabled = sim.phase !== "running";
+  closeDayBtn.disabled = sim.phase !== "running" && sim.phase !== "closing";
+  settleDayBtn.disabled = sim.running || calendar.phase === "settled" || calendar.phase === "planning";
+  advanceDayBtn.disabled = sim.running || calendar.phase !== "settled";
   resetBtn.disabled = sim.phase === "closing";
   saveSettingsBtn.disabled = sim.phase === "closing";
   renderSnapshotFromState();
@@ -537,6 +644,7 @@ function renderSnapshotFromState() {
     return;
   }
   renderStatus();
+  renderCampaign(state.snapshot);
   renderKpis(state.snapshot);
   renderCounterThinking(state.snapshot);
   renderStaff(state.snapshot);
@@ -560,6 +668,7 @@ async function loadRecentEvents() {
 async function runControl(action, successMessage) {
   try {
     await action();
+    await refreshSnapshot();
     if (successMessage) {
       setNotice(successMessage);
     }
@@ -568,13 +677,31 @@ async function runControl(action, successMessage) {
   }
 }
 
+async function refreshSnapshot() {
+  const snapshot = await api("/api/snapshot");
+  renderSnapshot(snapshot);
+}
+
 function attachControls() {
   startBtn.addEventListener("click", () =>
-    runControl(() => api("/api/control/start", "POST"), "Simulation started.")
+    runControl(() => api("/api/day/start", "POST"), "Day started.")
   );
   stopBtn.addEventListener("click", () =>
     runControl(() => api("/api/control/stop", "POST"), "Simulation stopped.")
   );
+  closeDayBtn.addEventListener("click", () =>
+    runControl(() => api("/api/day/close", "POST"), "Day closed and settled.")
+  );
+  settleDayBtn.addEventListener("click", () =>
+    runControl(() => api("/api/day/settle", "POST"), "Day settled.")
+  );
+  advanceDayBtn.addEventListener("click", () => {
+    clear(eventLogNode);
+    state.events = [];
+    state.eventCursor = 0;
+    state.seenThoughts.clear();
+    return runControl(() => api("/api/day/advance", "POST"), "Advanced to next day.");
+  });
   resetBtn.addEventListener("click", () => {
     clear(eventLogNode);
     state.events = [];
@@ -599,8 +726,7 @@ function attachControls() {
 
 async function bootstrap() {
   attachControls();
-  const firstSnapshot = await api("/api/snapshot");
-  renderSnapshot(firstSnapshot);
+  await refreshSnapshot();
   await loadRecentEvents();
 
   const stream = new EventSource("/api/stream");
