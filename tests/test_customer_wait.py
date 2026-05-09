@@ -128,6 +128,21 @@ class CustomerWaitToolTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(state["order_id"])
         self.assertEqual(world.queue_length(), 0)
 
+    async def test_place_order_rejects_empty_item_list(self):
+        world = WorldState()
+        state = {
+            "order_id": None,
+            "table_id": None,
+            "done": False,
+            "arrived_at": time.time(),
+        }
+
+        result = await execute_customer_tool("place_order", {"items": []}, "cust_test", world, state)
+
+        self.assertIn("Choose at least one menu item", result)
+        self.assertIsNone(state["order_id"])
+        self.assertEqual(world.queue_length(), 0)
+
     async def test_sip_drink_succeeds_for_held_drink(self):
         world = WorldState()
         await world.update_customer_visit("cust_test", held_items=["latte"], consumed_items=[])

@@ -302,6 +302,8 @@ class WorldState:
         return len([order for order in self._state["order_queue"] if order["status"] in OPEN_ORDER_STATUSES])
 
     async def place_order(self, customer_id: str, items: list[str]) -> str:
+        if not items:
+            raise ValueError("Choose at least one menu item before placing an order.")
         order_id = f"ord_{uuid.uuid4().hex[:6]}"
         menu = self.get_menu_availability()
         unavailable = [item for item in items if item not in menu or not menu[item]["orderable"]]

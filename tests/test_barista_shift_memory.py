@@ -254,6 +254,15 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(world.queue_length(), 0)
 
+    async def test_place_order_rejects_empty_item_list(self):
+        world = WorldState()
+
+        with self.assertRaisesRegex(ValueError, "at least one menu item"):
+            await world.place_order("cust_test", [])
+
+        self.assertEqual(world.queue_length(), 0)
+        self.assertEqual(world.get_shift_summary()["orders_created"], 0)
+
     async def test_place_order_rejects_aggregate_supply_shortage(self):
         world = WorldState()
         world._state["supplies"]["cups"]["quantity"] = 1

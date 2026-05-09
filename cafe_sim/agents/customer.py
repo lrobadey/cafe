@@ -56,6 +56,7 @@ CUSTOMER_TOOLS = [
             "properties": {
                 "items": {
                     "type": "array",
+                    "minItems": 1,
                     "items": {"type": "string"},
                     "description": "Menu item IDs to order, such as ['latte', 'muffin'].",
                 }
@@ -235,6 +236,8 @@ async def execute_customer_tool(
 
     if tool_name == "place_order":
         items = tool_input.get("items", [])
+        if not items:
+            return "Could not place order. Choose at least one menu item first."
         available = world.get_menu()
         invalid = [item for item in items if item not in available]
         if invalid:
