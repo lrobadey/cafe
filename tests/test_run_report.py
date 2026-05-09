@@ -7,6 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cafe_sim"))
 
 from run_report import RunReporter
+from state_view import build_world_snapshot
 from world import WorldState
 
 
@@ -66,7 +67,8 @@ class RunReporterTests(unittest.TestCase):
         world.record_agent_thinking("barista_alex", "barista", "Alex", "Checking whether the queue is empty.")
         world.record_agent_thinking("cust_test", "customer", "Test Customer", "Comparing budget to prices.")
 
-        snapshot = world.get_live_snapshot(
+        snapshot = build_world_snapshot(
+            world,
             active_customers=[
                 {
                     "customer_id": "cust_test",
@@ -97,7 +99,8 @@ class RunReporterTests(unittest.TestCase):
             "left_with_unconsumed_items": False,
         }
 
-        snapshot = world.get_live_snapshot(
+        snapshot = build_world_snapshot(
+            world,
             active_customers=[
                 {
                     "customer_id": "cust_test",

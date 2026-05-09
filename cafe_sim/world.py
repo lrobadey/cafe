@@ -212,6 +212,26 @@ class WorldState:
     def get_staff(self) -> dict:
         return {staff_id: dict(staff) for staff_id, staff in self._state["staff"].items()}
 
+    def get_tables(self) -> dict:
+        return {table_id: dict(table) for table_id, table in self._state["tables"].items()}
+
+    def get_orders(self) -> list[dict]:
+        return [
+            {
+                **dict(order),
+                "items": list(order.get("items", [])),
+                "missing_supplies": dict(order.get("missing_supplies", {})),
+            }
+            for order in self._state["order_queue"]
+        ]
+
+    def get_menu_item_names(self, item_ids: list[str]) -> list[str]:
+        return [
+            self._state["menu"][item_id]["name"]
+            for item_id in item_ids
+            if item_id in self._state["menu"]
+        ]
+
     def get_customer_visit(self, customer_id: str) -> dict:
         visit = self._state["customer_visits"].get(customer_id, {})
         return {
@@ -490,46 +510,16 @@ class WorldState:
             ]
         )
 
-    def get_agent_thinking(self, active_customers: list[dict], sim_state: dict) -> list[dict]:
-        active_by_id = {customer["customer_id"]: customer for customer in active_customers}
-        agent_rows = []
-        if sim_state.get("running"):
-            for staff_id, staff in self._state["staff"].items():
-                if staff["role"] == "barista":
-                    agent_rows.append(
-                        {
-                            "agent_id": staff_id,
-                            "agent_type": "barista",
-                            "display_name": staff["display_name"],
-                        }
-                    )
-        for customer in active_customers:
-            agent_rows.append(
-                {
-                    "agent_id": customer["customer_id"],
-                    "agent_type": "customer",
-                    "display_name": customer["name"],
-                }
-            )
-
-        thinking = self._state["agent_thinking"]
-        result = []
-        for row in agent_rows:
-            current = thinking.get(row["agent_id"], {})
-            result.append(
-                {
-                    **row,
-                    "summary": current.get("summary"),
-                    "updated_at": current.get("updated_at"),
-                    "persona_mood": active_by_id.get(row["agent_id"], {}).get("mood"),
-                }
-            )
-        return result
-
     def get_recent_events(self, after_index: int = 0, limit: int = 100) -> list[dict]:
         start = max(0, after_index)
         end = start + max(1, limit)
         return [dict(event) for event in self._state["event_log"][start:end]]
+
+    def get_event_cursor(self) -> int:
+        return len(self._state["event_log"])
+
+    def get_agent_thinking_entries(self) -> dict:
+        return {agent_id: dict(entry) for agent_id, entry in self._state["agent_thinking"].items()}
 
     def set_menu_item_availability(self, item_id: str, available: bool) -> bool:
         item = self._state["menu"].get(item_id)
@@ -546,91 +536,6 @@ class WorldState:
         supply["quantity"] = int(supply.get("quantity", 0)) + max(0, int(quantity))
         self.log("RUNNER", "restock", f"{supply_id} +{quantity}")
         return True
-
-    def get_live_snapshot(self, active_customers: list[dict], sim_state: dict) -> dict:
-        customer_by_id = {}
-        for customer in active_customers:
-            customer_id = customer["customer_id"]
-            visit = self.get_customer_visit(customer_id)
-            held_items = visit.get("held_items", [])
-            consumed_items = visit.get("consumed_items", [])
-            customer_by_id[customer_id] = {
-                **dict(customer),
-                "visit_phase": visit.get("visit_phase", "arrived"),
-                "held_items": held_items,
-                "held_item_names": [
-                    self._state["menu"][item_id]["name"] for item_id in held_items if item_id in self._state["menu"]
-                ],
-                "consumed_items": consumed_items,
-                "consumed_item_names": [
-                    self._state["menu"][item_id]["name"] for item_id in consumed_items if item_id in self._state["menu"]
-                ],
-                "received_order_at": visit.get("received_order_at"),
-                "consumption_started_at": visit.get("consumption_started_at"),
-            }
-        table_by_customer = {
-            table["customer_id"]: table_id
-            for table_id, table in self._state["tables"].items()
-            if table["customer_id"]
-        }
-        order_by_customer = {}
-        for order in self._state["order_queue"]:
-            if order["status"] in OPEN_ORDER_STATUSES:
-                order_by_customer[order["customer_id"]] = order
-
-        tables = [
-            {
-                "table_id": table_id,
-                "status": table["status"],
-                "customer_id": table["customer_id"],
-                "customer": customer_by_id.get(table["customer_id"]),
-            }
-            for table_id, table in self._state["tables"].items()
-        ]
-        queue = [
-            {
-                "order_id": order["order_id"],
-                "customer_id": order["customer_id"],
-                "customer": customer_by_id.get(order["customer_id"]),
-                "items": list(order["items"]),
-                "item_names": [self._state["menu"][item]["name"] for item in order["items"]],
-                "status": order["status"],
-                "total_price": order["total_price"],
-                "placed_at": order["placed_at"],
-                "claimed_at": order["claimed_at"],
-                "preparing_at": order["preparing_at"],
-                "ready_at": order["ready_at"],
-                "delivered_at": order["delivered_at"],
-                "barista_id": order["barista_id"],
-                "completed_by": order["completed_by"],
-                "closed_at": order.get("closed_at"),
-                "close_reason": order.get("close_reason"),
-                "missing_supplies": dict(order.get("missing_supplies", {})),
-            }
-            for order in self._state["order_queue"]
-        ]
-        menu = self.get_menu_availability()
-        return {
-            "simulation": dict(sim_state),
-            "metrics": self.get_shift_summary(),
-            "pipeline": self.get_order_pipeline(),
-            "tables": tables,
-            "queue": queue,
-            "menu": menu,
-            "supplies": self.get_supplies(),
-            "staff": self.get_staff(),
-            "agent_thinking": self.get_agent_thinking(active_customers, sim_state),
-            "active_customers": [
-                {
-                    **customer_by_id.get(customer["customer_id"], dict(customer)),
-                    "table_id": table_by_customer.get(customer["customer_id"]),
-                    "order_id": order_by_customer.get(customer["customer_id"], {}).get("order_id"),
-                    "order_status": order_by_customer.get(customer["customer_id"], {}).get("status"),
-                }
-                for customer in active_customers
-            ],
-            "event_cursor": len(self._state["event_log"]),
-        }
 
     async def closeout_unresolved(self, reason: str) -> dict:
         """Resolve any remaining world state at the end of a run."""

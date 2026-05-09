@@ -8,6 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "cafe_sim"))
 
 from run_report import RunReporter
+from state_view import build_world_snapshot
 from world import WorldState
 
 
@@ -83,7 +84,8 @@ class WorldCloseoutTests(unittest.IsolatedAsyncioTestCase):
 
         await world.closeout_unresolved("duration_complete")
         pipeline = world.get_order_pipeline()
-        snapshot = world.get_live_snapshot(
+        snapshot = build_world_snapshot(
+            world,
             active_customers=[],
             sim_state={"running": False, "phase": "stopped"},
         )

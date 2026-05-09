@@ -17,6 +17,7 @@ from config import (
 from logger import log_event
 from personas import PERSONAS
 from run_report import RunReporter
+from state_view import build_world_snapshot
 from world import WorldState
 
 
@@ -113,7 +114,8 @@ async def run_simulation():
             "duration_seconds": round(time.time() - start_time, 3),
             "stop_reason": "duration_complete",
         }
-        final_snapshot = world.get_live_snapshot(
+        final_snapshot = build_world_snapshot(
+            world,
             active_customers=[],
             sim_state={
                 "running": False,
@@ -159,7 +161,8 @@ async def run_simulation():
             "duration_seconds": round(time.time() - start_time, 3),
             "stop_reason": "cancelled",
         }
-        final_snapshot = world.get_live_snapshot(
+        final_snapshot = build_world_snapshot(
+            world,
             active_customers=[],
             sim_state={
                 "running": False,
@@ -182,7 +185,8 @@ async def run_simulation():
             task.cancel()
         await asyncio.gather(*barista_tasks, *active_customers, return_exceptions=True)
         closeout = await world.closeout_unresolved("failed")
-        final_snapshot = world.get_live_snapshot(
+        final_snapshot = build_world_snapshot(
+            world,
             active_customers=[],
             sim_state={
                 "running": False,

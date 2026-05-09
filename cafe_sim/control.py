@@ -19,6 +19,7 @@ from config import (
 from logger import log_event
 from personas import PERSONAS
 from run_report import RunReporter
+from state_view import build_live_snapshot
 from world import WorldState
 
 
@@ -296,23 +297,7 @@ class SimulationController:
         return customers
 
     def get_snapshot(self) -> dict:
-        sim_state = self.get_simulation_state()
-        snapshot = self.world.get_live_snapshot(
-            active_customers=self.get_active_customers(),
-            sim_state=sim_state,
-        )
-        snapshot.update(
-            {
-                "campaign": self.campaign.campaign_snapshot(),
-                "calendar": self.campaign.calendar_snapshot(
-                    elapsed_seconds=sim_state["elapsed_seconds"],
-                    sim_duration=sim_state["sim_duration"],
-                ),
-                "day_summary": self.campaign.current_day.summary,
-                "history": self.campaign.history_snapshot(),
-            }
-        )
-        return snapshot
+        return build_live_snapshot(self)
 
     def get_events(self, after_index: int, limit: int = 100, day_id: Optional[str] = None, campaign_id: Optional[str] = None) -> dict:
         raw_events = self.world.get_recent_events(after_index=after_index, limit=limit)

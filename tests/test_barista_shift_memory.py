@@ -13,6 +13,7 @@ from agents.barista import (
     render_shift_memory,
     update_shift_memory,
 )
+from state_view import build_world_snapshot
 from world import WorldState
 
 
@@ -491,7 +492,7 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_live_snapshot_exposes_staff_state(self):
         world = WorldState()
 
-        snapshot = world.get_live_snapshot(active_customers=[], sim_state={"running": False})
+        snapshot = build_world_snapshot(world, active_customers=[], sim_state={"running": False})
 
         self.assertIn("staff", snapshot)
         self.assertEqual(snapshot["staff"]["barista_alex"]["display_name"], "Alex")
@@ -502,7 +503,7 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
         world._state["supplies"]["milk"]["quantity"] = 1
         world._state["supplies"]["muffins"]["quantity"] = 0
 
-        snapshot = world.get_live_snapshot(active_customers=[], sim_state={"running": False})
+        snapshot = build_world_snapshot(world, active_customers=[], sim_state={"running": False})
 
         self.assertEqual(snapshot["supplies"]["milk"]["status"], "low")
         self.assertEqual(snapshot["supplies"]["muffins"]["status"], "out")
@@ -512,7 +513,7 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
         world._state["supplies"]["milk"]["quantity"] = 0
         world.set_menu_item_availability("tea", False)
 
-        snapshot = world.get_live_snapshot(active_customers=[], sim_state={"running": False})
+        snapshot = build_world_snapshot(world, active_customers=[], sim_state={"running": False})
 
         self.assertFalse(snapshot["menu"]["latte"]["stock_available"])
         self.assertTrue(snapshot["menu"]["latte"]["manually_available"])
@@ -527,7 +528,7 @@ class StaffStateTests(unittest.IsolatedAsyncioTestCase):
     async def test_running_agent_thinking_rows_include_staff_baristas(self):
         world = WorldState()
 
-        snapshot = world.get_live_snapshot(active_customers=[], sim_state={"running": True})
+        snapshot = build_world_snapshot(world, active_customers=[], sim_state={"running": True})
 
         thinking_by_id = {entry["agent_id"]: entry for entry in snapshot["agent_thinking"]}
         self.assertEqual(thinking_by_id["barista_alex"]["display_name"], "Alex")
