@@ -3,3 +3,5 @@ __pycache__/
 .env
 runs/reports/
 runs/campaigns/
+.claude/
+.pet-runs/

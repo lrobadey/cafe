@@ -3,102 +3,109 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Cafe Control Room</title>
+  <title>CafeLab</title>
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <div class="app">
+  <div id="app" class="app" data-mode="loading">
     <header class="topbar">
-      <div class="title-block">
-        <h1>Cafe Control Room</h1>
+      <div class="brand-block">
+        <h1>CafeLab</h1>
         <div>
-          <div id="campaign-line" class="campaign-line">Loading campaign...</div>
+          <div id="campaign-line" class="campaign-line">Loading cafe...</div>
           <div id="status-line" class="status-line">Connecting...</div>
         </div>
       </div>
-      <div class="top-actions">
-        <button id="start-btn">Start</button>
-        <button id="spawn-btn" class="secondary">Spawn</button>
-        <button id="close-day-btn" class="secondary">Close Day</button>
-        <button id="settle-day-btn" class="ghost">Settle</button>
-        <button id="advance-day-btn" class="ghost">Next Day</button>
-        <button id="stop-btn" class="ghost">Stop</button>
-        <button id="reset-btn" class="ghost">Reset</button>
-      </div>
+      <nav id="phase-actions" class="phase-actions" aria-label="Current actions"></nav>
     </header>
 
-    <section class="campaign-panel">
-      <div id="day-timeline" class="day-timeline"></div>
-      <div id="day-summary" class="day-summary"></div>
-      <div id="planning-panel" class="planning-panel"></div>
-    </section>
+    <section id="day-pulse" class="day-pulse" aria-label="Day pulse"></section>
 
-    <section class="kpis" id="kpis"></section>
-
-    <main class="workspace">
-      <section class="floor-module">
-        <div class="module-heading">
-          <div>
-            <h2>Floor</h2>
-            <p>Tables, counter, customers, and order movement.</p>
-          </div>
-          <div id="active-customers" class="presence-strip"></div>
+    <main class="stage">
+      <section id="prep-stage" class="prep-stage" aria-label="Prep counter">
+        <div class="stage-copy">
+          <span class="eyebrow">Before opening</span>
+          <h2>Prep the counter.</h2>
+          <p>Restock what matters, check the menu, then open the doors.</p>
         </div>
-        <div class="floor-plan">
-          <div class="counter-zone">
-            <div id="counter-label" class="counter-label">Counter</div>
-            <div id="pipeline" class="pipeline"></div>
+        <div id="prep-counter" class="prep-counter"></div>
+      </section>
+
+      <section id="live-stage" class="live-stage" aria-label="Live cafe floor">
+        <div class="floor">
+          <div class="floor-label entrance-label">Door</div>
+          <div class="floor-label counter-label">Counter</div>
+          <div class="floor-label storage-label">Storage</div>
+
+          <div id="standing-zone" class="standing-zone zone" data-select-kind="zone" data-select-id="standing">
+            <div class="zone-title">Arrivals</div>
+            <div id="standing-customers" class="people-strip"></div>
           </div>
-          <div id="tables" class="tables"></div>
+
+          <div id="staff-stage" class="staff-stage zone"></div>
+
+          <div id="queue-river" class="queue-river zone" aria-label="Order flow"></div>
+
+          <div id="tables-map" class="tables-map zone"></div>
+
+          <div id="storage-zone" class="storage-zone zone"></div>
+
+          <div id="register-zone" class="register-zone zone"></div>
         </div>
       </section>
 
-      <aside class="side-rail">
-        <section class="staff-module">
-          <div class="module-heading compact">
-            <h2>Staff</h2>
-            <span>Baristas</span>
-          </div>
-          <div id="staff-list" class="staff-list"></div>
-        </section>
+      <section id="history-stage" class="history-stage" aria-label="Cafe history">
+        <div class="stage-copy">
+          <span class="eyebrow">After service</span>
+          <h2>Read the day, then choose tomorrow.</h2>
+          <p>History is the cafe game loop: profit, reputation, service quality, and what the next day needs.</p>
+        </div>
+        <div id="history-wall" class="history-wall"></div>
+      </section>
+    </main>
 
-        <section class="supplies-module">
-          <div class="module-heading compact">
-            <h2>Supplies</h2>
-            <span>Inventory</span>
-          </div>
-          <div id="supplies-list" class="supplies-list"></div>
-        </section>
+    <aside id="inspector" class="inspector" aria-live="polite">
+      <button id="inspector-close" class="icon-button" type="button" aria-label="Close inspector">x</button>
+      <div id="inspector-content" class="inspector-content"></div>
+    </aside>
 
-        <section class="events-module">
-          <div class="module-heading compact">
-            <h2>Activity</h2>
-            <span>Live feed</span>
+    <details class="back-office">
+      <summary>Back office</summary>
+      <div class="back-office-grid">
+        <div>
+          <h3>Shift settings</h3>
+          <label>
+            <span>Spawn interval</span>
+            <input id="spawn-interval" type="number" min="1" />
+          </label>
+          <label>
+            <span>Duration</span>
+            <input id="sim-duration" type="number" min="10" />
+          </label>
+          <button id="save-settings-btn" class="secondary" type="button">Apply settings</button>
+        </div>
+        <div>
+          <h3>Menu</h3>
+          <div id="menu-list" class="menu-list"></div>
+        </div>
+        <div>
+          <h3>Admin</h3>
+          <div class="admin-actions">
+            <button id="stop-btn" class="secondary" type="button">Stop</button>
+            <button id="reset-btn" class="ghost" type="button">Reset</button>
           </div>
           <div id="event-log" class="event-log"></div>
-        </section>
-
-        <section class="ops-module">
-          <details>
-            <summary>Menu and settings</summary>
-            <div class="settings-grid">
-              <label>
-                <span>Spawn interval</span>
-                <input id="spawn-interval" type="number" min="1" />
-              </label>
-              <label>
-                <span>Duration</span>
-                <input id="sim-duration" type="number" min="10" />
-              </label>
-              <button id="save-settings-btn" class="ghost">Apply</button>
-            </div>
-            <div id="menu-list" class="menu-list"></div>
-          </details>
-        </section>
-      </aside>
-    </main>
+        </div>
+      </div>
+    </details>
   </div>
 
-  <script src="/app.js?v=multi-day-campaign"></script>
+  <button id="start-btn" hidden type="button">Open Day</button>
+  <button id="spawn-btn" hidden type="button">Spawn Customer</button>
+  <button id="close-day-btn" hidden type="button">Close Day</button>
+  <button id="settle-day-btn" hidden type="button">Settle</button>
+  <button id="advance-day-btn" hidden type="button">Next Day</button>
+
+  <script src="/app.js?v=bold-floor-redesign"></script>
 </body>
 </html>

@@ -4,42 +4,42 @@ const state = {
   events: [],
   notice: null,
   noticeUntil: 0,
-  expanded: new Set(),
+  selected: null,
   seenThoughts: new Set(),
+  thoughtBubbles: new Map(),
+  activeThoughtKeys: new Set(),
 };
 
+const appNode = document.getElementById("app");
 const statusLine = document.getElementById("status-line");
 const campaignLineNode = document.getElementById("campaign-line");
-const dayTimelineNode = document.getElementById("day-timeline");
-const daySummaryNode = document.getElementById("day-summary");
-const planningPanelNode = document.getElementById("planning-panel");
-const kpisNode = document.getElementById("kpis");
-const tablesNode = document.getElementById("tables");
-const activeCustomersNode = document.getElementById("active-customers");
-const pipelineNode = document.getElementById("pipeline");
+const phaseActionsNode = document.getElementById("phase-actions");
+const dayPulseNode = document.getElementById("day-pulse");
+const prepCounterNode = document.getElementById("prep-counter");
+const standingCustomersNode = document.getElementById("standing-customers");
+const staffStageNode = document.getElementById("staff-stage");
+const queueRiverNode = document.getElementById("queue-river");
+const tablesMapNode = document.getElementById("tables-map");
+const storageZoneNode = document.getElementById("storage-zone");
+const registerZoneNode = document.getElementById("register-zone");
+const historyWallNode = document.getElementById("history-wall");
+const inspectorNode = document.getElementById("inspector");
+const inspectorContentNode = document.getElementById("inspector-content");
+const inspectorCloseBtn = document.getElementById("inspector-close");
 const menuNode = document.getElementById("menu-list");
 const eventLogNode = document.getElementById("event-log");
-const counterLabelNode = document.getElementById("counter-label");
-const staffListNode = document.getElementById("staff-list");
-const suppliesListNode = document.getElementById("supplies-list");
-
-const startBtn = document.getElementById("start-btn");
-const stopBtn = document.getElementById("stop-btn");
-const resetBtn = document.getElementById("reset-btn");
-const spawnBtn = document.getElementById("spawn-btn");
-const closeDayBtn = document.getElementById("close-day-btn");
-const settleDayBtn = document.getElementById("settle-day-btn");
-const advanceDayBtn = document.getElementById("advance-day-btn");
-const saveSettingsBtn = document.getElementById("save-settings-btn");
 const spawnIntervalInput = document.getElementById("spawn-interval");
 const simDurationInput = document.getElementById("sim-duration");
+const stopBtn = document.getElementById("stop-btn");
+const resetBtn = document.getElementById("reset-btn");
+const saveSettingsBtn = document.getElementById("save-settings-btn");
 
-const pipelineOrder = ["pending", "claimed", "preparing", "ready", "delivered", "abandoned", "stale", "failed"];
 const openOrderStatuses = new Set(["pending", "claimed", "preparing", "ready"]);
+const activeOrderStatuses = ["pending", "claimed", "preparing", "ready"];
 const pipelineLabels = {
   pending: "Waiting",
   claimed: "Claimed",
-  preparing: "In prep",
+  preparing: "Making",
   ready: "Ready",
   delivered: "Picked up",
   abandoned: "Abandoned",
@@ -84,14 +84,6 @@ function appendText(parent, tag, className, text) {
   return node;
 }
 
-function formatTime(ts) {
-  return new Date(ts * 1000).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
 function formatMoney(value) {
   return `$${Number(value || 0).toFixed(2)}`;
 }
@@ -100,7 +92,15 @@ function formatItemList(items) {
   return (items || []).length ? items.join(", ") : "none";
 }
 
-function clampText(text, maxLength = 92) {
+function formatTime(ts) {
+  return new Date(ts * 1000).toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
+
+function clampText(text, maxLength = 96) {
   const clean = String(text || "").replace(/\s+/g, " ").trim();
   if (clean.length <= maxLength) {
     return clean;
@@ -121,55 +121,140 @@ function extractBoldThought(summary) {
     match = markdownBoldPattern.exec(summary || "");
   }
 
-  return clampText([...new Set(matches)].slice(0, 2).join(" / "));
+  return clampText([...new Set(matches)].slice(0, 2).join(" / "), 82);
 }
 
 function getThinkingByAgent(snapshot) {
   return new Map((snapshot.agent_thinking || []).map((entry) => [entry.agent_id, entry]));
 }
 
-function appendThoughtBubble(parent, summary, className = "", key = "") {
+function getThoughtKey(kind, person) {
+  const id = person.customer_id || person.id || person.agent_id || person.display_name || person.name;
+  return id ? `${kind}:${id}` : "";
+}
+
+function clearThoughtBubbles() {
+  state.thoughtBubbles.forEach((entry) => entry.node.remove());
+  state.thoughtBubbles.clear();
+  state.activeThoughtKeys.clear();
+}
+
+function upsertThoughtBubble(parent, summary, key) {
   const thought = extractBoldThought(summary);
+  if (!key) {
+    return null;
+  }
+
   if (!thought) {
+    const existing = state.thoughtBubbles.get(key);
+    if (existing) {
+      existing.node.remove();
+      state.thoughtBubbles.delete(key);
+    }
     return null;
   }
 
   const fingerprint = `${key}:${thought}`;
-  const isSettled = state.seenThoughts.has(fingerprint);
+  const settled = state.seenThoughts.has(fingerprint);
   state.seenThoughts.add(fingerprint);
-  const bubble = createElement(
-    "div",
-    `thought-bubble${className ? ` ${className}` : ""}${isSettled ? " is-settled" : ""}`,
-    thought
-  );
+  state.activeThoughtKeys.add(key);
+
+  const existing = state.thoughtBubbles.get(key);
+  if (existing && existing.thought === thought) {
+    existing.node.className = "thought-bubble is-settled";
+    if (existing.node.parentNode !== parent) {
+      parent.appendChild(existing.node);
+    }
+    return existing.node;
+  }
+
+  const bubble = existing?.node || createElement("div");
+  bubble.className = `thought-bubble${settled ? " is-settled" : ""}`;
+  bubble.textContent = thought;
   bubble.title = thought;
   parent.appendChild(bubble);
+  state.thoughtBubbles.set(key, { node: bubble, thought });
   return bubble;
 }
 
-function toggleExpanded(key) {
-  if (state.expanded.has(key)) {
-    state.expanded.delete(key);
-  } else {
-    state.expanded.add(key);
-  }
+function beginThoughtRender() {
+  state.activeThoughtKeys.clear();
 }
 
-function makeExpandable(node, key, render) {
-  node.classList.toggle("is-expanded", state.expanded.has(key));
-  node.addEventListener("click", (event) => {
-    if (event.target.matches("input, button, label")) {
-      return;
+function pruneThoughtBubbles() {
+  state.thoughtBubbles.forEach((entry, key) => {
+    if (!state.activeThoughtKeys.has(key)) {
+      entry.node.remove();
+      state.thoughtBubbles.delete(key);
     }
-    toggleExpanded(key);
-    render();
   });
+}
+
+function getMode(snapshot) {
+  const sim = snapshot.simulation;
+  const calendar = snapshot.calendar;
+  if (calendar.phase === "settled") {
+    return "history";
+  }
+  if (sim.running || sim.phase === "closing" || calendar.phase === "open") {
+    return "live";
+  }
+  return "planning";
+}
+
+function selectItem(kind, id) {
+  state.selected = { kind, id };
+  renderInspector();
+  markSelected();
+}
+
+function selectedKey() {
+  return state.selected ? `${state.selected.kind}:${state.selected.id}` : "";
+}
+
+function selectable(node, kind, id) {
+  node.dataset.selectKey = `${kind}:${id}`;
+  node.tabIndex = 0;
+  node.addEventListener("click", () => selectItem(kind, id));
+  node.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      selectItem(kind, id);
+    }
+  });
+  return node;
+}
+
+function markSelected() {
+  document.querySelectorAll("[data-select-key]").forEach((node) => {
+    node.classList.toggle("is-selected", node.dataset.selectKey === selectedKey());
+  });
+  inspectorNode.classList.toggle("is-open", Boolean(state.selected));
 }
 
 function setNotice(message, isError = false) {
   state.notice = { message, isError };
   state.noticeUntil = Date.now() + 3500;
   renderStatus();
+}
+
+function getOpenOrders(snapshot) {
+  return (snapshot.queue || []).filter((order) => openOrderStatuses.has(order.status));
+}
+
+function getSupplyAlerts(snapshot) {
+  return Object.entries(snapshot.supplies || {}).filter(([, supply]) => supply.status !== "normal");
+}
+
+function getCustomerOrder(snapshot, customerId) {
+  return getOpenOrders(snapshot).find((order) => order.customer_id === customerId);
+}
+
+function getPerson(snapshot, id) {
+  if ((snapshot.staff || {})[id]) {
+    return { kind: "staff", id, ...snapshot.staff[id] };
+  }
+  return (snapshot.active_customers || []).find((customer) => customer.customer_id === id) || null;
 }
 
 function renderStatus() {
@@ -186,473 +271,553 @@ function renderStatus() {
   }
 
   state.notice = null;
-  statusLine.className = "status-line";
-  const sim = state.snapshot.simulation;
-  const campaign = state.snapshot.campaign;
-  const calendar = state.snapshot.calendar;
-  campaignLineNode.textContent = `${campaign.cafe_name} - Day ${calendar.day_index} - ${calendar.date_label} - ${calendar.sim_current_time} - ${calendar.phase}`;
-  if (sim.phase === "closing") {
-    statusLine.textContent = `Closing - ${sim.elapsed_seconds}s elapsed - ${sim.spawn_count} spawned`;
-  } else if (sim.running) {
-    statusLine.textContent = `Running - ${sim.elapsed_seconds}s elapsed - ${sim.spawn_count} spawned`;
-  } else {
-    statusLine.textContent = "Stopped - ready for operator input";
-  }
-}
-
-function renderCampaign(snapshot) {
+  const snapshot = state.snapshot;
   const campaign = snapshot.campaign;
-  const calendar = snapshot.calendar;
-  const history = snapshot.history || {};
-
-  clear(dayTimelineNode);
-  (history.timeline || []).forEach((day) => {
-    const chip = createElement("div", `day-chip${day.active ? " active" : ""}`);
-    appendText(chip, "strong", null, `Day ${day.day_index}`);
-    appendText(chip, "span", null, day.phase === "settled" ? formatMoney(day.profit) : calendar.phase);
-    appendText(chip, "span", "small muted", `${day.customers_served ?? 0} served`);
-    if (day.warnings) {
-      appendText(chip, "span", "warning-dot", `${day.warnings} alert`);
-    }
-    dayTimelineNode.appendChild(chip);
-  });
-
-  renderDaySummary(snapshot);
-  renderPlanning(snapshot);
-}
-
-function renderDaySummary(snapshot) {
-  clear(daySummaryNode);
-  const campaign = snapshot.campaign;
-  const summary = snapshot.day_summary;
-  const head = createElement("div", "summary-head");
-  appendText(head, "strong", null, `Cash ${formatMoney(campaign.money)}`);
-  appendText(head, "span", null, `Reputation ${campaign.reputation}`);
-  daySummaryNode.appendChild(head);
-
-  if (!summary) {
-    appendText(daySummaryNode, "div", "small muted", "No settled day yet.");
-    return;
-  }
-
-  const rows = [
-    ["Revenue", formatMoney(summary.revenue)],
-    ["Supply costs", formatMoney(summary.supply_costs)],
-    ["Profit", formatMoney(summary.profit)],
-    ["Served", String(summary.customers_served)],
-    ["Lost", String(summary.customers_lost)],
-    ["Satisfaction", `${summary.satisfaction}/100`],
-    ["Reputation", `${summary.reputation_delta >= 0 ? "+" : ""}${summary.reputation_delta}`],
-  ];
-  const grid = createElement("div", "summary-grid");
-  rows.forEach(([label, value]) => {
-    const item = createElement("div", "summary-metric");
-    appendText(item, "span", null, label);
-    appendText(item, "strong", null, value);
-    grid.appendChild(item);
-  });
-  daySummaryNode.appendChild(grid);
-
-  if ((summary.tomorrow_warnings || []).length) {
-    const warnings = createElement("div", "summary-warnings");
-    summary.tomorrow_warnings.slice(0, 3).forEach((warning) => appendText(warnings, "div", null, warning));
-    daySummaryNode.appendChild(warnings);
-  }
-}
-
-function renderPlanning(snapshot) {
-  clear(planningPanelNode);
   const calendar = snapshot.calendar;
   const sim = snapshot.simulation;
-  const locked = sim.running || sim.phase === "closing" || calendar.phase === "settled";
-  appendText(planningPanelNode, "strong", null, calendar.phase === "settled" ? "Ready for tomorrow" : "Planning");
+  campaignLineNode.textContent = `${campaign.cafe_name} - Day ${calendar.day_index} - ${calendar.date_label}`;
+  statusLine.className = "status-line";
+  if (sim.phase === "closing") {
+    statusLine.textContent = "Closing the doors and resolving the shift.";
+  } else if (sim.running) {
+    statusLine.textContent = `${calendar.sim_current_time} - service is live.`;
+  } else if (calendar.phase === "settled") {
+    statusLine.textContent = "Day settled. Read the recap and move to tomorrow.";
+  } else {
+    statusLine.textContent = "Planning. Prep the counter before opening.";
+  }
+}
 
-  const controls = createElement("div", "restock-grid");
-  Object.entries(snapshot.supplies || {}).forEach(([supplyId, supply]) => {
-    const row = createElement("div", `restock-row ${supply.status || "normal"}`);
-    appendText(row, "span", null, `${supply.name || supplyId}: ${supply.quantity}`);
-    const button = createElement("button", "ghost restock-btn", "+5");
-    button.disabled = locked;
-    button.dataset.supplyId = supplyId;
-    row.appendChild(button);
-    controls.appendChild(row);
-  });
-  planningPanelNode.appendChild(controls);
+function actionButton(label, className, disabled, run) {
+  const button = createElement("button", className, label);
+  button.type = "button";
+  button.disabled = disabled;
+  button.addEventListener("click", run);
+  return button;
+}
 
-  planningPanelNode.querySelectorAll(".restock-btn").forEach((button) => {
-    button.addEventListener("click", () =>
-      runControl(
-        () => api("/api/restock", "POST", { supply_id: button.dataset.supplyId, quantity: 5 }),
-        `Restocked ${button.dataset.supplyId}.`
+function renderPhaseActions(snapshot) {
+  clear(phaseActionsNode);
+  const sim = snapshot.simulation;
+  const calendar = snapshot.calendar;
+
+  if (getMode(snapshot) === "planning") {
+    phaseActionsNode.appendChild(
+      actionButton("Open day", "primary", sim.phase === "closing" || calendar.phase === "settled", () =>
+        runControl(() => api("/api/day/start", "POST"), "Day opened.")
       )
     );
-  });
+    return;
+  }
+
+  if (getMode(snapshot) === "history") {
+    phaseActionsNode.appendChild(
+      actionButton("Next day", "primary", sim.running || calendar.phase !== "settled", () => {
+        state.events = [];
+        state.eventCursor = 0;
+        state.seenThoughts.clear();
+        clearThoughtBubbles();
+        return runControl(() => api("/api/day/advance", "POST"), "Advanced to next day.");
+      })
+    );
+    return;
+  }
+
+  if (sim.running || sim.phase === "closing") {
+    phaseActionsNode.appendChild(
+      actionButton("Spawn customer", "secondary", sim.phase !== "running", () =>
+        runControl(() => api("/api/control/spawn", "POST"), "Customer spawned.")
+      )
+    );
+    phaseActionsNode.appendChild(
+      actionButton("Close day", "primary", sim.phase !== "running" && sim.phase !== "closing", () =>
+        runControl(() => api("/api/day/close", "POST"), "Day closed.")
+      )
+    );
+    return;
+  }
+
+  phaseActionsNode.appendChild(
+    actionButton("Settle day", "primary", sim.running || calendar.phase === "settled" || calendar.phase === "planning", () =>
+      runControl(() => api("/api/day/settle", "POST"), "Day settled.")
+    )
+  );
 }
 
-function renderKpis(snapshot) {
-  const metrics = snapshot.metrics;
-  const sim = snapshot.simulation;
-  const occupiedTables = snapshot.tables.filter((table) => table.status === "occupied").length;
-  const openOrders = snapshot.queue.filter((order) => openOrderStatuses.has(order.status)).length;
-  const staffEntries = Object.entries(snapshot.staff || {});
-  const completions = staffEntries
-    .map(([staffId, staff]) => `${staff.display_name} ${metrics.orders_completed_by_barista?.[staffId] ?? 0}`)
-    .join(" / ");
-  const idleChecks = staffEntries
-    .map(([staffId, staff]) => `${staff.display_name} ${metrics.idle_checks_by_barista?.[staffId] ?? 0}`)
-    .join(" / ");
-  const conflictsByStaff = staffEntries
-    .map(([staffId, staff]) => `${staff.display_name} ${metrics.claim_conflicts_by_barista?.[staffId] ?? 0}`)
-    .join(" / ");
-  const chips = [
-    ["Day", `${snapshot.calendar.day_index} ${snapshot.calendar.phase}`],
-    ["Cash", formatMoney(snapshot.campaign.money)],
-    ["Rep", String(snapshot.campaign.reputation)],
+function renderDayPulse(snapshot) {
+  clear(dayPulseNode);
+  const metrics = snapshot.metrics || {};
+  const campaign = snapshot.campaign || {};
+  const calendar = snapshot.calendar || {};
+  const sim = snapshot.simulation || {};
+  const openOrders = getOpenOrders(snapshot).length;
+  const supplyAlerts = getSupplyAlerts(snapshot);
+  const served = metrics.orders_delivered ?? 0;
+  const alertLabel = supplyAlerts.length
+    ? `${supplyAlerts.length} supply alert${supplyAlerts.length === 1 ? "" : "s"}`
+    : "Supplies steady";
+
+  [
+    ["Day", `${calendar.day_index} / ${calendar.phase}`],
+    ["Clock", calendar.sim_current_time || `${sim.elapsed_seconds || 0}s`],
     ["Revenue", formatMoney(metrics.revenue)],
+    ["Served", String(served)],
     ["Open orders", String(openOrders)],
-    ["Tables", `${occupiedTables}/${snapshot.tables.length}`],
-    ["Customers", String(snapshot.active_customers.length)],
-    ["Elapsed", `${sim.elapsed_seconds}s`],
-    ["Avg ready", metrics.average_wait_seconds == null ? "n/a" : `${metrics.average_wait_seconds}s`],
-    ["Avg prep", metrics.average_prep_seconds == null ? "n/a" : `${metrics.average_prep_seconds}s`],
-    ["Conflicts", String(metrics.claim_conflicts ?? 0)],
-    ["Conflict split", conflictsByStaff || "n/a"],
-    ["Completed", completions || "n/a"],
-    ["Idle checks", idleChecks || "n/a"],
-  ];
-
-  clear(kpisNode);
-  chips.forEach(([label, value]) => {
-    const chip = createElement("div", "chip");
-    appendText(chip, "div", "label", label);
-    appendText(chip, "div", "value", value);
-    kpisNode.appendChild(chip);
+    ["Cash", formatMoney(campaign.money)],
+    ["Rep", String(campaign.reputation)],
+    ["Storage", alertLabel],
+  ].forEach(([label, value]) => {
+    const item = createElement("button", "pulse-item");
+    item.type = "button";
+    appendText(item, "span", null, label);
+    appendText(item, "strong", null, value);
+    item.addEventListener("click", () => selectItem(label === "Storage" ? "zone" : "pulse", label.toLowerCase()));
+    dayPulseNode.appendChild(item);
   });
 }
 
-function getCustomerOrder(snapshot, customerId) {
-  return snapshot.queue
-    .filter((order) => order.customer_id === customerId)
-    .find((order) => openOrderStatuses.has(order.status));
+function renderPrep(snapshot) {
+  clear(prepCounterNode);
+  const sim = snapshot.simulation;
+  const calendar = snapshot.calendar;
+  const locked = sim.running || sim.phase === "closing" || calendar.phase === "settled";
+
+  const supplyRail = createElement("div", "prep-supplies");
+  appendText(supplyRail, "h3", null, "Restock");
+  Object.entries(snapshot.supplies || {}).forEach(([supplyId, supply]) => {
+    const row = selectable(createElement("div", `prep-line ${supply.status || "normal"}`), "supply", supplyId);
+    appendText(row, "span", null, supply.name || supplyId);
+    appendText(row, "strong", null, String(supply.quantity));
+    const button = createElement("button", "tiny-action", "+5");
+    button.type = "button";
+    button.disabled = locked;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      runControl(() => api("/api/restock", "POST", { supply_id: supplyId, quantity: 5 }), `Restocked ${supply.name || supplyId}.`);
+    });
+    row.appendChild(button);
+    supplyRail.appendChild(row);
+  });
+
+  const menuRail = createElement("div", "prep-menu");
+  appendText(menuRail, "h3", null, "Menu readiness");
+  const menuEntries = Object.entries(snapshot.menu || {});
+  const orderable = menuEntries.filter(([, item]) => item.orderable).length;
+  const soldOut = menuEntries.filter(([, item]) => item.manually_available && !item.stock_available).length;
+  const offMenu = menuEntries.filter(([, item]) => !item.manually_available).length;
+  [
+    ["Orderable", String(orderable)],
+    ["Sold out", String(soldOut)],
+    ["Off menu", String(offMenu)],
+  ].forEach(([label, value]) => {
+    const line = createElement("div", "prep-stat");
+    appendText(line, "span", null, label);
+    appendText(line, "strong", null, value);
+    menuRail.appendChild(line);
+  });
+
+  const settingsRail = createElement("div", "prep-shift");
+  appendText(settingsRail, "h3", null, "Shift shape");
+  appendText(settingsRail, "p", null, `Customers every ${sim.spawn_interval}s for ${sim.sim_duration}s.`);
+  appendText(settingsRail, "p", null, "Fine controls live in Back office.");
+
+  prepCounterNode.append(supplyRail, menuRail, settingsRail);
 }
 
-function renderTables(snapshot) {
-  clear(tablesNode);
+function renderPerson(node, person, thinking, kind = "customer") {
+  const avatar = createElement("div", `person ${kind}`);
+  const name = createElement("div", "person-nameplate");
+  appendText(name, "strong", null, person.display_name || person.name || person.customer_id || "Guest");
+  appendText(name, "span", null, person.status || person.visit_phase || person.mood || "active");
+  avatar.appendChild(name);
+  upsertThoughtBubble(avatar, thinking?.summary, getThoughtKey(kind, person));
+  node.appendChild(avatar);
+  return avatar;
+}
+
+function renderStandingCustomers(snapshot) {
+  clear(standingCustomersNode);
   const thinkingByAgent = getThinkingByAgent(snapshot);
-  snapshot.tables.forEach((table) => {
-    const tableNode = createElement("div", `table ${table.status}`);
-    const customer = table.customer;
-    const order = customer ? getCustomerOrder(snapshot, customer.customer_id) : null;
-    const head = createElement("div", "table-head");
-    appendText(head, "div", "table-id", table.table_id.toUpperCase());
-    appendText(head, "div", "table-state", table.status === "occupied" ? "Occupied" : "Empty");
-    tableNode.appendChild(head);
-
-    const body = createElement("div", "table-body");
-    if (customer) {
-      const nameRow = createElement("div", "person-thinking-row");
-      appendText(nameRow, "div", "person-name", customer.name);
-      appendThoughtBubble(
-        nameRow,
-        thinkingByAgent.get(customer.customer_id)?.summary,
-        "table-thought",
-        `table:${customer.customer_id}`
-      );
-      body.appendChild(nameRow);
-      appendText(
-        body,
-        "div",
-        "small muted",
-        `${customer.mood} - ${customer.visit_phase || "arrived"} - ${customer.waiting_seconds}s`
-      );
-      if (order) {
-        appendText(body, "div", "small", `${pipelineLabels[order.status]}: ${order.item_names.join(", ")}`);
-      } else if ((customer.held_item_names || []).length) {
-        appendText(body, "div", "small", `Holding: ${formatItemList(customer.held_item_names)}`);
-      } else {
-        appendText(body, "div", "small muted", "No open order");
-      }
-      if ((customer.consumed_item_names || []).length) {
-        appendText(body, "div", "small muted", `Consumed: ${formatItemList(customer.consumed_item_names)}`);
-      }
-      appendText(body, "div", "details", `${customer.customer_id}${order ? ` - ${order.order_id} - ${formatMoney(order.total_price)}` : ""}`);
-    } else {
-      appendText(body, "div", "muted", "Open table");
-      appendText(body, "div", "details", "No customer has claimed this table.");
-    }
-    tableNode.appendChild(body);
-    makeExpandable(tableNode, `table:${table.table_id}`, () => renderTables(snapshot));
-    tablesNode.appendChild(tableNode);
+  const standing = (snapshot.active_customers || []).filter((customer) => !customer.table_id);
+  if (!standing.length) {
+    appendText(standingCustomersNode, "div", "quiet-line", "No one at the door.");
+    return;
+  }
+  standing.forEach((customer) => {
+    const person = selectable(createElement("div", "person-slot"), "person", customer.customer_id);
+    renderPerson(person, customer, thinkingByAgent.get(customer.customer_id), "customer");
+    standingCustomersNode.appendChild(person);
   });
-}
-
-function renderCounterThinking(snapshot) {
-  if (!counterLabelNode) {
-    return;
-  }
-
-  counterLabelNode.replaceChildren();
-  appendText(counterLabelNode, "span", "counter-title", "Counter");
-}
-
-function createStaffRow(staffId) {
-  const row = createElement("div", "staff-row");
-  row.dataset.staffId = staffId;
-
-  const head = createElement("div", "row-head");
-  appendText(head, "strong", "staff-name", staffId);
-  appendText(head, "span", "staff-status", "idle");
-  row.appendChild(head);
-
-  appendText(row, "div", "small staff-current", "Current order: none");
-  appendText(row, "div", "small muted staff-completed", "Completed: 0");
-  appendText(row, "div", "small muted staff-last", "Last action: none");
-  appendText(row, "div", "staff-thinking muted", "Thinking: No thinking summary yet.");
-  makeExpandable(row, `staff:${staffId}`, renderSnapshotFromState);
-  return row;
-}
-
-function updateStaffThinking(row, thinking) {
-  const summary = thinking?.summary || "";
-  const nextKey = `${thinking?.updated_at || ""}:${summary}`;
-  if (row.dataset.thinkingKey === nextKey) {
-    return;
-  }
-
-  const thinkingNode = row.querySelector(".staff-thinking");
-  thinkingNode.textContent = summary
-    ? `Thinking: ${clampText(summary, 140)}`
-    : "Thinking: No thinking summary yet.";
-  thinkingNode.classList.toggle("muted", !summary);
-  row.dataset.thinkingKey = nextKey;
 }
 
 function renderStaff(snapshot) {
+  clear(staffStageNode);
+  appendText(staffStageNode, "div", "zone-title", "Baristas");
+  const thinkingByAgent = getThinkingByAgent(snapshot);
   const staffEntries = Object.entries(snapshot.staff || {});
   if (!staffEntries.length) {
-    clear(staffListNode);
-    appendText(staffListNode, "div", "empty-state", "No staff on shift.");
+    appendText(staffStageNode, "div", "quiet-line", "No baristas on shift.");
     return;
   }
-
-  const visibleStaffIds = new Set();
-  const thinkingByAgent = getThinkingByAgent(snapshot);
   staffEntries.forEach(([staffId, staff]) => {
-    visibleStaffIds.add(staffId);
-    let row = staffListNode.querySelector(`[data-staff-id="${staffId}"]`);
-    if (!row) {
-      row = createStaffRow(staffId);
-      staffListNode.appendChild(row);
-    }
-
-    row.className = `staff-row ${staff.status || "idle"}`;
-    row.querySelector(".staff-name").textContent = staff.display_name || staffId;
-    row.querySelector(".staff-status").textContent = staff.status || "idle";
-    row.querySelector(".staff-current").textContent = `Current order: ${staff.current_order_id || "none"}`;
-    row.querySelector(".staff-completed").textContent = `Completed: ${staff.orders_completed ?? 0}`;
-    row.querySelector(".staff-last").textContent = `Last action: ${staff.last_action || "none"}`;
-    updateStaffThinking(row, thinkingByAgent.get(staffId));
-  });
-
-  staffListNode.querySelectorAll("[data-staff-id]").forEach((row) => {
-    if (!visibleStaffIds.has(row.dataset.staffId)) {
-      row.remove();
-    }
+    const row = selectable(createElement("div", `barista-line ${staff.status || "idle"}`), "person", staffId);
+    const person = {
+      id: staffId,
+      display_name: staff.display_name || staffId,
+      status: staff.current_order_id ? `${staff.status}: ${staff.current_order_id}` : staff.status || "idle",
+    };
+    renderPerson(row, person, thinkingByAgent.get(staffId), "barista");
+    const count = createElement("div", "barista-count", `${staff.orders_completed ?? 0} done`);
+    row.appendChild(count);
+    staffStageNode.appendChild(row);
   });
 }
 
-function renderSupplies(snapshot) {
-  clear(suppliesListNode);
-  const entries = Object.entries(snapshot.supplies || {});
-  if (!entries.length) {
-    appendText(suppliesListNode, "div", "empty-state", "No supplies tracked.");
-    return;
+function renderOrderTicket(order) {
+  const ticket = selectable(createElement("button", `order-ticket ${order.status}`), "order", order.order_id);
+  ticket.type = "button";
+  appendText(ticket, "span", "ticket-status", pipelineLabels[order.status] || order.status);
+  appendText(ticket, "strong", null, order.customer?.name || order.customer_id);
+  appendText(ticket, "span", "ticket-items", formatItemList(order.item_names));
+  if (order.barista_id) {
+    appendText(ticket, "span", "ticket-owner", order.barista_id);
   }
-
-  entries.forEach(([supplyId, supply]) => {
-    const row = createElement("div", `supply-row ${supply.status || "normal"}`);
-    const head = createElement("div", "row-head");
-    appendText(head, "strong", null, supply.name || supplyId);
-    appendText(head, "span", "supply-status", supply.status || "normal");
-    row.appendChild(head);
-    appendText(row, "div", "small muted", `${supply.quantity} left`);
-    suppliesListNode.appendChild(row);
-  });
+  return ticket;
 }
 
-function renderActiveCustomers(snapshot) {
-  clear(activeCustomersNode);
-  if (!snapshot.active_customers.length) {
-    appendText(activeCustomersNode, "div", "muted small", "No active customers");
-    return;
-  }
-
-  const thinkingByAgent = getThinkingByAgent(snapshot);
-  snapshot.active_customers.forEach((customer) => {
-    const isStanding = !customer.table_id;
-    const pill = createElement("div", isStanding ? "presence-pill has-thought-slot" : "presence-pill");
-    appendText(
-      pill,
-      "span",
-      "presence-person",
-      `${customer.name} - ${customer.table_id || "standing"} - ${customer.visit_phase || "arrived"}`
-    );
-    if (isStanding) {
-      appendThoughtBubble(
-        pill,
-        thinkingByAgent.get(customer.customer_id)?.summary,
-        "presence-thought",
-        `presence:${customer.customer_id}`
-      );
-    }
-    activeCustomersNode.appendChild(pill);
-  });
-}
-
-function renderOrderRow(order) {
-  const item = createElement("div", "list-item order-row");
-  const head = createElement("div", "row-head");
-  appendText(head, "strong", null, order.customer?.name || order.customer_id);
-  appendText(head, "span", "order-status", pipelineLabels[order.status] || order.status);
-  item.appendChild(head);
-  appendText(item, "div", "small", order.item_names.join(", "));
-  appendText(
-    item,
-    "div",
-    "details",
-    `${order.order_id} - ${formatMoney(order.total_price)}${order.barista_id ? ` - ${order.barista_id}` : ""}`
-  );
-  makeExpandable(item, `order:${order.order_id}`, renderSnapshotFromState);
-  return item;
-}
-
-function renderPipeline(snapshot) {
-  clear(pipelineNode);
-  pipelineOrder.forEach((lane) => {
-    const items = snapshot.queue.filter((order) => order.status === lane);
-    const laneNode = createElement("div", "lane");
-    const title = createElement("div", "title");
-    appendText(title, "span", null, pipelineLabels[lane]);
-    appendText(title, "span", null, String(items.length));
-    laneNode.appendChild(title);
-
-    const itemList = createElement("div", "lane-items");
-    if (!items.length) {
-      appendText(itemList, "div", "empty-state", "Clear");
+function renderQueue(snapshot) {
+  clear(queueRiverNode);
+  appendText(queueRiverNode, "div", "zone-title", "Order flow");
+  activeOrderStatuses.forEach((status) => {
+    const lane = createElement("div", `flow-lane ${status}`);
+    const orders = (snapshot.queue || []).filter((order) => order.status === status);
+    const label = createElement("div", "flow-label");
+    appendText(label, "span", null, pipelineLabels[status]);
+    appendText(label, "strong", null, String(orders.length));
+    lane.appendChild(label);
+    const tickets = createElement("div", "ticket-row");
+    if (!orders.length) {
+      appendText(tickets, "div", "quiet-line", "Clear");
     } else {
-      items.forEach((order) => itemList.appendChild(renderOrderRow(order)));
+      orders.forEach((order) => tickets.appendChild(renderOrderTicket(order)));
     }
-    laneNode.appendChild(itemList);
-    pipelineNode.appendChild(laneNode);
+    lane.appendChild(tickets);
+    queueRiverNode.appendChild(lane);
   });
+}
+
+function renderTables(snapshot) {
+  clear(tablesMapNode);
+  const thinkingByAgent = getThinkingByAgent(snapshot);
+  (snapshot.tables || []).forEach((table) => {
+    const node = selectable(createElement("div", `cafe-table ${table.status}`), "table", table.table_id);
+    appendText(node, "span", "table-id", table.table_id.toUpperCase());
+    const customer = table.customer;
+    if (customer) {
+      const customerSlot = createElement("div", "seated-person");
+      renderPerson(customerSlot, customer, thinkingByAgent.get(customer.customer_id), "customer");
+      node.appendChild(customerSlot);
+      const order = getCustomerOrder(snapshot, customer.customer_id);
+      appendText(node, "span", "table-note", order ? `${pipelineLabels[order.status]} order` : customer.visit_phase || "seated");
+    } else {
+      appendText(node, "span", "table-note", "Open");
+    }
+    tablesMapNode.appendChild(node);
+  });
+}
+
+function renderStorage(snapshot) {
+  clear(storageZoneNode);
+  appendText(storageZoneNode, "div", "zone-title", "Storage");
+  const alerts = getSupplyAlerts(snapshot);
+  const entries = alerts.length ? alerts : Object.entries(snapshot.supplies || {}).slice(0, 3);
+  entries.forEach(([supplyId, supply]) => {
+    const line = selectable(createElement("div", `supply-line ${supply.status || "normal"}`), "supply", supplyId);
+    appendText(line, "span", null, supply.name || supplyId);
+    appendText(line, "strong", null, `${supply.quantity}`);
+    storageZoneNode.appendChild(line);
+  });
+  if (!entries.length) {
+    appendText(storageZoneNode, "div", "quiet-line", "No supplies tracked.");
+  }
+}
+
+function renderRegister(snapshot) {
+  clear(registerZoneNode);
+  const metrics = snapshot.metrics || {};
+  appendText(registerZoneNode, "div", "zone-title", "Register");
+  appendText(registerZoneNode, "strong", "register-money", formatMoney(metrics.revenue));
+  appendText(registerZoneNode, "span", null, `${metrics.orders_delivered ?? 0} picked up`);
+}
+
+function renderHistory(snapshot) {
+  clear(historyWallNode);
+  const history = snapshot.history || {};
+  const summary = snapshot.day_summary;
+  const timeline = history.timeline || [];
+
+  const timelineNode = createElement("div", "history-timeline");
+  if (!timeline.length) {
+    appendText(timelineNode, "div", "quiet-line", "No completed days yet.");
+  }
+  timeline.forEach((day) => {
+    const dayNode = selectable(createElement("button", `day-mark${day.active ? " active" : ""}`), "history-day", day.day_id || day.day_index);
+    dayNode.type = "button";
+    appendText(dayNode, "span", null, `Day ${day.day_index}`);
+    appendText(dayNode, "strong", null, day.phase === "settled" ? formatMoney(day.profit) : day.phase);
+    appendText(dayNode, "small", null, `${day.customers_served ?? 0} served`);
+    timelineNode.appendChild(dayNode);
+  });
+
+  const recap = createElement("div", "history-recap");
+  appendText(recap, "h3", null, "Latest day");
+  if (!summary) {
+    appendText(recap, "p", null, "Settle a day to see profit, satisfaction, reputation, and tomorrow's warnings.");
+  } else {
+    [
+      ["Revenue", formatMoney(summary.revenue)],
+      ["Profit", formatMoney(summary.profit)],
+      ["Served", String(summary.customers_served)],
+      ["Lost", String(summary.customers_lost)],
+      ["Satisfaction", `${summary.satisfaction}/100`],
+      ["Reputation", `${summary.reputation_delta >= 0 ? "+" : ""}${summary.reputation_delta}`],
+    ].forEach(([label, value]) => {
+      const row = createElement("div", "recap-line");
+      appendText(row, "span", null, label);
+      appendText(row, "strong", null, value);
+      recap.appendChild(row);
+    });
+    (summary.tomorrow_warnings || []).slice(0, 4).forEach((warning) => appendText(recap, "p", "warning-text", warning));
+  }
+
+  historyWallNode.append(timelineNode, recap);
 }
 
 function renderMenu(snapshot) {
   clear(menuNode);
-  Object.entries(snapshot.menu).forEach(([itemId, item]) => {
+  Object.entries(snapshot.menu || {}).forEach(([itemId, item]) => {
     const availabilityClass = item.orderable ? "orderable" : item.manually_available ? "sold-out" : "off-menu";
-    const row = createElement("div", `menu-item ${availabilityClass}`);
+    const row = selectable(createElement("div", `menu-line ${availabilityClass}`), "menu", itemId);
     const label = createElement("div");
     appendText(label, "strong", null, item.name);
-    appendText(label, "div", "small muted", `${formatMoney(item.price)} - ${item.prep_seconds}s prep - ${item.category}`);
-    const availabilityText = item.orderable
-      ? "orderable for incoming customers"
-      : item.manually_available
-        ? "sold out by supplies"
-        : "off menu by toggle";
-    const missingSupplies = Object.values(item.missing_supplies || {})
-      .map((supply) => supply.name || "supply")
-      .join(", ");
-    const statusText = missingSupplies
-      ? `${availabilityText}: ${missingSupplies}`
-      : availabilityText;
-    appendText(label, "div", "menu-status", statusText);
+    appendText(label, "span", null, `${formatMoney(item.price)} - ${item.category || "item"}`);
 
     const toggleLabel = createElement("label", "menu-toggle");
     const input = document.createElement("input");
     input.type = "checkbox";
     input.checked = item.manually_available ?? item.available;
-    input.dataset.itemId = itemId;
-    toggleLabel.appendChild(input);
-    toggleLabel.appendChild(document.createTextNode(input.checked ? "On" : "Off"));
-
-    row.appendChild(label);
-    row.appendChild(toggleLabel);
-    makeExpandable(row, `menu:${itemId}`, () => renderMenu(snapshot));
-    menuNode.appendChild(row);
-  });
-
-  menuNode.querySelectorAll("input[type=checkbox]").forEach((checkbox) => {
-    checkbox.addEventListener("change", async (event) => {
-      const input = event.target;
-      const itemId = input.dataset.itemId;
+    input.addEventListener("click", (event) => event.stopPropagation());
+    input.addEventListener("change", async () => {
       try {
         await api(`/api/control/menu/${itemId}`, "POST", { available: input.checked });
-        setNotice(`${input.checked ? "Enabled" : "Disabled"} ${itemId}.`);
+        setNotice(`${input.checked ? "Enabled" : "Disabled"} ${item.name}.`);
+        await refreshSnapshot();
       } catch (error) {
         input.checked = !input.checked;
         setNotice("Could not update menu item.", true);
       }
     });
+    toggleLabel.appendChild(input);
+    toggleLabel.appendChild(document.createTextNode(input.checked ? "On" : "Off"));
+    row.append(label, toggleLabel);
+    menuNode.appendChild(row);
   });
 }
 
 function renderEvents() {
   clear(eventLogNode);
   if (!state.events.length) {
-    appendText(eventLogNode, "div", "empty-state", "No actions logged yet.");
+    appendText(eventLogNode, "div", "quiet-line", "No actions logged yet.");
+    return;
+  }
+  [...state.events].reverse().slice(0, 20).forEach((event, index) => {
+    const row = selectable(createElement("button", "event-line"), "event", `${event.t}:${index}`);
+    row.type = "button";
+    row.dataset.eventIndex = String(state.events.length - index - 1);
+    appendText(row, "span", null, event.sim_time || formatTime(event.t));
+    appendText(row, "strong", null, `${event.agent}: ${event.action}`);
+    eventLogNode.appendChild(row);
+  });
+}
+
+function renderInspectorEmpty() {
+  clear(inspectorContentNode);
+  appendText(inspectorContentNode, "span", "eyebrow", "Inspector");
+  appendText(inspectorContentNode, "h2", null, "Select something on the floor.");
+  appendText(inspectorContentNode, "p", null, "People, tables, orders, supplies, history, and activity all open here.");
+}
+
+function addInspectorRows(rows) {
+  const list = createElement("div", "inspector-rows");
+  rows.forEach(([label, value]) => {
+    const row = createElement("div", "inspector-row");
+    appendText(row, "span", null, label);
+    appendText(row, "strong", null, value == null || value === "" ? "none" : String(value));
+    list.appendChild(row);
+  });
+  inspectorContentNode.appendChild(list);
+}
+
+function renderInspector() {
+  if (!state.snapshot || !state.selected) {
+    renderInspectorEmpty();
     return;
   }
 
-  [...state.events].reverse().forEach((event, index) => {
-    const key = `event:${event.t}:${index}`;
-    const row = createElement("div", "event-item");
-    const head = createElement("div", "row-head");
-    const left = createElement("div");
-    appendText(left, "div", "event-agent", event.agent);
-    appendText(left, "div", "event-action", event.action);
-    appendText(head, "span", "event-time", event.sim_time || formatTime(event.t));
-    head.appendChild(left);
-    row.appendChild(head);
-    appendText(row, "div", "details", event.detail);
-    makeExpandable(row, key, renderEvents);
-    eventLogNode.appendChild(row);
-  });
+  const snapshot = state.snapshot;
+  const { kind, id } = state.selected;
+  clear(inspectorContentNode);
+  appendText(inspectorContentNode, "span", "eyebrow", kind);
+
+  if (kind === "person") {
+    const person = getPerson(snapshot, id);
+    const thinking = getThinkingByAgent(snapshot).get(id);
+    if (!person) {
+      appendText(inspectorContentNode, "h2", null, "Person not active");
+      return;
+    }
+    appendText(inspectorContentNode, "h2", null, person.display_name || person.name || id);
+    addInspectorRows([
+      ["Status", person.status || person.visit_phase || "active"],
+      ["Mood", person.mood || thinking?.persona_mood],
+      ["Current order", person.current_order_id || person.order_id],
+      ["Order status", person.order_status],
+      ["Completed", person.orders_completed],
+      ["Last action", person.last_action],
+      ["Held", formatItemList(person.held_item_names)],
+      ["Consumed", formatItemList(person.consumed_item_names)],
+    ]);
+    if (thinking?.summary) {
+      appendText(inspectorContentNode, "h3", null, "Reasoning summary");
+      appendText(inspectorContentNode, "p", "thought-full", thinking.summary);
+    }
+    return;
+  }
+
+  if (kind === "order") {
+    const order = (snapshot.queue || []).find((entry) => entry.order_id === id);
+    if (!order) {
+      appendText(inspectorContentNode, "h2", null, "Order not found");
+      return;
+    }
+    appendText(inspectorContentNode, "h2", null, order.order_id);
+    addInspectorRows([
+      ["Customer", order.customer?.name || order.customer_id],
+      ["Items", formatItemList(order.item_names)],
+      ["Status", pipelineLabels[order.status] || order.status],
+      ["Barista", order.barista_id || order.completed_by],
+      ["Total", formatMoney(order.total_price)],
+      ["Close reason", order.close_reason],
+    ]);
+    return;
+  }
+
+  if (kind === "table") {
+    const table = (snapshot.tables || []).find((entry) => entry.table_id === id);
+    appendText(inspectorContentNode, "h2", null, id.toUpperCase());
+    if (!table) {
+      appendText(inspectorContentNode, "p", null, "Table not found.");
+      return;
+    }
+    addInspectorRows([
+      ["Status", table.status],
+      ["Customer", table.customer?.name],
+      ["Mood", table.customer?.mood],
+      ["Visit phase", table.customer?.visit_phase],
+      ["Order", table.customer ? getCustomerOrder(snapshot, table.customer.customer_id)?.order_id : null],
+    ]);
+    return;
+  }
+
+  if (kind === "supply") {
+    const supply = (snapshot.supplies || {})[id];
+    appendText(inspectorContentNode, "h2", null, supply?.name || id);
+    addInspectorRows([
+      ["Quantity", supply?.quantity],
+      ["Status", supply?.status],
+      ["Low threshold", supply?.low_threshold],
+    ]);
+    return;
+  }
+
+  if (kind === "menu") {
+    const item = (snapshot.menu || {})[id];
+    appendText(inspectorContentNode, "h2", null, item?.name || id);
+    const missing = Object.values(item?.missing_supplies || {}).map((supply) => supply.name).join(", ");
+    addInspectorRows([
+      ["Price", item ? formatMoney(item.price) : null],
+      ["Prep", item?.prep_seconds ? `${item.prep_seconds}s` : null],
+      ["Category", item?.category],
+      ["Orderable", item?.orderable ? "yes" : "no"],
+      ["Missing", missing],
+    ]);
+    return;
+  }
+
+  if (kind === "history-day") {
+    appendText(inspectorContentNode, "h2", null, `Day ${id}`);
+    appendText(inspectorContentNode, "p", null, "The full history mode keeps settled day performance visible after service.");
+    return;
+  }
+
+  if (kind === "event") {
+    const event = state.events[Number(document.querySelector(`[data-select-key="event:${id}"]`)?.dataset.eventIndex)];
+    appendText(inspectorContentNode, "h2", null, event ? `${event.agent}: ${event.action}` : "Event");
+    if (event) {
+      addInspectorRows([
+        ["Time", event.sim_time || formatTime(event.t)],
+        ["Agent", event.agent],
+        ["Action", event.action],
+      ]);
+      appendText(inspectorContentNode, "p", null, event.detail || "No detail.");
+    }
+    return;
+  }
+
+  if (kind === "zone" && id === "storage") {
+    appendText(inspectorContentNode, "h2", null, "Storage");
+    Object.entries(snapshot.supplies || {}).forEach(([supplyId, supply]) => {
+      addInspectorRows([[supply.name || supplyId, `${supply.quantity} - ${supply.status}`]]);
+    });
+    return;
+  }
+
+  appendText(inspectorContentNode, "h2", null, "Day pulse");
+  addInspectorRows([
+    ["Revenue", formatMoney(snapshot.metrics?.revenue)],
+    ["Cash", formatMoney(snapshot.campaign?.money)],
+    ["Reputation", snapshot.campaign?.reputation],
+    ["Open orders", getOpenOrders(snapshot).length],
+    ["Supply alerts", getSupplyAlerts(snapshot).length],
+  ]);
 }
 
 function renderSnapshot(snapshot) {
   state.snapshot = snapshot;
   const sim = snapshot.simulation;
-  const calendar = snapshot.calendar;
-
+  appNode.dataset.mode = getMode(snapshot);
   spawnIntervalInput.value = sim.spawn_interval;
   simDurationInput.value = sim.sim_duration;
-  startBtn.textContent = calendar.day_index > 1 ? "Start Day" : "Start";
-  startBtn.disabled = sim.phase === "running" || sim.phase === "closing" || calendar.phase === "settled";
   stopBtn.disabled = sim.phase !== "running" && sim.phase !== "closing";
-  spawnBtn.disabled = sim.phase !== "running";
-  closeDayBtn.disabled = sim.phase !== "running" && sim.phase !== "closing";
-  settleDayBtn.disabled = sim.running || calendar.phase === "settled" || calendar.phase === "planning";
-  advanceDayBtn.disabled = sim.running || calendar.phase !== "settled";
   resetBtn.disabled = sim.phase === "closing";
   saveSettingsBtn.disabled = sim.phase === "closing";
-  renderSnapshotFromState();
-}
 
-function renderSnapshotFromState() {
-  if (!state.snapshot) {
-    return;
-  }
+  beginThoughtRender();
   renderStatus();
-  renderCampaign(state.snapshot);
-  renderKpis(state.snapshot);
-  renderCounterThinking(state.snapshot);
-  renderStaff(state.snapshot);
-  renderSupplies(state.snapshot);
-  renderTables(state.snapshot);
-  renderActiveCustomers(state.snapshot);
-  renderPipeline(state.snapshot);
-  renderMenu(state.snapshot);
+  renderPhaseActions(snapshot);
+  renderDayPulse(snapshot);
+  renderPrep(snapshot);
+  renderStandingCustomers(snapshot);
+  renderStaff(snapshot);
+  renderQueue(snapshot);
+  renderTables(snapshot);
+  renderStorage(snapshot);
+  renderRegister(snapshot);
+  renderHistory(snapshot);
+  renderMenu(snapshot);
+  pruneThoughtBubbles();
+  renderInspector();
+  markSelected();
 }
 
 async function loadRecentEvents() {
@@ -683,35 +848,22 @@ async function refreshSnapshot() {
 }
 
 function attachControls() {
-  startBtn.addEventListener("click", () =>
-    runControl(() => api("/api/day/start", "POST"), "Day started.")
-  );
+  inspectorCloseBtn.addEventListener("click", () => {
+    state.selected = null;
+    renderInspector();
+    markSelected();
+  });
   stopBtn.addEventListener("click", () =>
     runControl(() => api("/api/control/stop", "POST"), "Simulation stopped.")
   );
-  closeDayBtn.addEventListener("click", () =>
-    runControl(() => api("/api/day/close", "POST"), "Day closed and settled.")
-  );
-  settleDayBtn.addEventListener("click", () =>
-    runControl(() => api("/api/day/settle", "POST"), "Day settled.")
-  );
-  advanceDayBtn.addEventListener("click", () => {
-    clear(eventLogNode);
-    state.events = [];
-    state.eventCursor = 0;
-    state.seenThoughts.clear();
-    return runControl(() => api("/api/day/advance", "POST"), "Advanced to next day.");
-  });
   resetBtn.addEventListener("click", () => {
-    clear(eventLogNode);
     state.events = [];
     state.eventCursor = 0;
     state.seenThoughts.clear();
+    clearThoughtBubbles();
+    renderEvents();
     return runControl(() => api("/api/control/reset", "POST"), "Simulation reset.");
   });
-  spawnBtn.addEventListener("click", () =>
-    runControl(() => api("/api/control/spawn", "POST"), "Customer spawned.")
-  );
   saveSettingsBtn.addEventListener("click", () =>
     runControl(
       () =>
@@ -726,6 +878,8 @@ function attachControls() {
 
 async function bootstrap() {
   attachControls();
+  renderEvents();
+  renderInspectorEmpty();
   await refreshSnapshot();
   await loadRecentEvents();
 
