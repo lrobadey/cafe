@@ -6,10 +6,10 @@ from pathlib import Path
 from openai import AsyncOpenAI
 
 # Model routing
-BARISTA_MODEL = "gpt-5.4-mini"
+BARISTA_MODEL = "gpt-5.5"
 
 # OpenAI Responses API controls
-REASONING_EFFORT = "high"
+REASONING_EFFORT = "low"
 REASONING_SUMMARY = "auto"
 STORE_RESPONSES = True
 
