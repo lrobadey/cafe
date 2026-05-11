@@ -9,12 +9,12 @@ The live app now models a small cafe with two AI baristas, a shared order queue,
 CafeLab v0.4 is built from five nested systems:
 
 1. **World** (`cafe_sim/world.py`) - the single source of truth for menu items, supplies, tables, staff, orders, customer visits, metrics, and events.
-2. **Agents** (`cafe_sim/agents/`) - two barista agents, Alex and Jamie, plus customer agents spawned during the run.
-3. **Tools** - local Python actions that agents call to enter, order, claim work, prepare items, consume food and drinks, leave, or idle.
+2. **Agents and customers** - two barista agents, Alex and Jamie, plus deterministic customer simulations spawned during the run.
+3. **Tools and world mutations** - local Python actions that baristas call, plus deterministic customer loops that enter, order, claim seats, consume items, and leave through the same world boundary.
 4. **Runner and controller** (`cafe_sim/runner.py`, `cafe_sim/control.py`) - the real-time clock, customer spawning, start/stop/reset behavior, and dashboard controls.
 5. **Dashboard and reports** (`dashboard/`, `cafe_sim/run_report.py`) - live operator visibility plus saved run artifacts under `runs/reports/`.
 
-Agents do not edit the cafe directly. Alex, Jamie, and each customer ask to do something through a tool call. The world accepts, rejects, or records the action. That keeps queue ownership, stock, tables, customer state, and reporting in one authoritative place.
+Agents and deterministic customers do not edit the cafe directly. The world accepts, rejects, or records each action. That keeps queue ownership, stock, tables, customer state, and reporting in one authoritative place.
 
 ## Feature Summary
 
@@ -53,9 +53,9 @@ The barista preparation step is the final physical checkpoint. If stock changed 
 
 ### Customer Visits, Dining, and Consumption
 
-Customers are persona-driven agents with a budget and mood. A visit can include entering, reading the live menu, ordering, finding a table, waiting, picking up an order, sipping drinks, eating food, lingering, and leaving.
+Customers are deterministic demand patterns, not LLM agents. Each customer is generated from one of three archetypes: Hurried Commuter, Remote Worker, or Leisure Customer. A visit can include entering, evaluating friction, ordering, finding a table, waiting, picking up an order, consuming items, dwelling, possibly reordering, and leaving.
 
-The world tracks each customer's visit phase, held items, consumed items, table, received-order time, and whether they left with unconsumed items. Customers without a table can still take their order away.
+The world tracks each customer's archetype, budget, patience, seat need, visit phase, active order, order history, held items, consumed items, table, received-order time, dwell target, spend, and whether they left with unconsumed items. Customers without a table can still take their order away unless their archetype requires seating.
 
 ### Dashboard Visibility
 
@@ -86,7 +86,7 @@ A report contains:
 - `events.jsonl` - append-only event stream with ordered runtime events
 - `summary.json` - final status, timing, metrics, final snapshot, and alerts
 
-Reports include customer spawns, model responses, tool calls, tool results, queue movement, stockout failures, final supplies, revenue, wait times, consumption counts, barista completion counts, and coordination metrics.
+Reports include customer spawns, deterministic customer lifecycle events, queue movement, stockout failures, final supplies, revenue, wait times, consumption counts, archetype metrics, barista model activity, barista completion counts, and coordination metrics.
 
 ## Repository Layout
 
@@ -101,12 +101,11 @@ cafe/
 │   ├── state_view.py        # live snapshot and event read models
 │   ├── run_report.py        # durable per-run report writer
 │   ├── config.py            # models, timing, menu, recipes, supplies, tables
-│   ├── personas.py          # customer personas
 │   ├── reasoning_summary.py # reasoning summary extraction
 │   ├── logger.py            # terminal logging
+│   ├── customers/           # deterministic customer archetypes, profiles, decisions, and visit loop
 │   ├── agents/
-│   │   ├── barista.py       # Alex/Jamie barista loop and tools
-│   │   └── customer.py      # customer loop and tools
+│   │   └── barista.py       # Alex/Jamie barista loop and tools
 │   └── requirements.txt
 ├── dashboard/
 │   ├── index.html           # dashboard shell
@@ -183,7 +182,6 @@ The main knobs live in `cafe_sim/config.py`.
 | Setting | Default | Meaning |
 |---|---:|---|
 | `BARISTA_MODEL` | `gpt-5.4-mini` | Model used by Alex and Jamie |
-| `CUSTOMER_MODEL` | `gpt-5.4-mini` | Model used by customer agents |
 | `REASONING_EFFORT` | `high` | Reasoning effort for model calls |
 | `REASONING_SUMMARY` | `auto` | Reasoning summary mode |
 | `STORE_RESPONSES` | `True` | Whether Responses API calls are stored |
@@ -192,8 +190,7 @@ The main knobs live in `cafe_sim/config.py`.
 | `CUSTOMER_SPAWN_INTERVAL` | `30` | Base seconds between customer spawns |
 | `CUSTOMER_SPAWN_JITTER` | `0.5` | Random spread around spawn interval |
 | `MAX_CONCURRENT_CUSTOMERS` | `4` | Active customer cap |
-| `MAX_CUSTOMER_HOPS` | `16` | Max customer tool-call cycles |
-| `CUSTOMER_MAX_WAIT` | `90` | Wait time before customers are nudged to consider leaving |
+| `CUSTOMER_RANDOM_SEED` | `None` | Optional seed for reproducible customer archetypes, profiles, orders, and reorders |
 | `BARISTA_POLL_INTERVAL` | `5` | Idle wait between barista work cycles |
 
 The same file owns the live menu, recipes, starting supplies, and table IDs.

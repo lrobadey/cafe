@@ -428,9 +428,9 @@ function renderPerson(node, person, thinking, kind = "customer") {
   const avatar = createElement("div", `person ${kind}`);
   const name = createElement("div", "person-nameplate");
   appendText(name, "strong", null, person.display_name || person.name || person.customer_id || "Guest");
-  appendText(name, "span", null, person.status || person.visit_phase || person.mood || "active");
+  appendText(name, "span", null, person.status || person.visit_phase || person.archetype_id || "active");
   avatar.appendChild(name);
-  upsertThoughtBubble(avatar, thinking?.summary, getThoughtKey(kind, person));
+  upsertThoughtBubble(avatar, kind === "customer" ? null : thinking?.summary, getThoughtKey(kind, person));
   node.appendChild(avatar);
   return avatar;
 }
@@ -677,17 +677,31 @@ function renderInspector() {
       return;
     }
     appendText(inspectorContentNode, "h2", null, person.display_name || person.name || id);
-    addInspectorRows([
-      ["Status", person.status || person.visit_phase || "active"],
-      ["Mood", person.mood || thinking?.persona_mood],
-      ["Current order", person.current_order_id || person.order_id],
-      ["Order status", person.order_status],
-      ["Completed", person.orders_completed],
-      ["Last action", person.last_action],
-      ["Held", formatItemList(person.held_item_names)],
-      ["Consumed", formatItemList(person.consumed_item_names)],
-    ]);
-    if (thinking?.summary) {
+    if (person.kind === "staff") {
+      addInspectorRows([
+        ["Status", person.status || "active"],
+        ["Current order", person.current_order_id],
+        ["Completed", person.orders_completed],
+        ["Last action", person.last_action],
+      ]);
+    } else {
+      addInspectorRows([
+        ["Status", person.visit_phase || "active"],
+        ["Archetype", person.archetype_id],
+        ["Budget", formatMoney(person.budget)],
+        ["Spent", formatMoney(person.budget_spent)],
+        ["Patience", person.patience],
+        ["Seat need", person.seat_need],
+        ["Orders", person.orders_placed],
+        ["Current order", person.active_order_id || person.order_id],
+        ["Order status", person.order_status],
+        ["Dwell target", person.dwell_seconds_target ? `${person.dwell_seconds_target}s` : null],
+        ["Leave reason", person.leave_reason],
+        ["Held", formatItemList(person.held_item_names)],
+        ["Consumed", formatItemList(person.consumed_item_names)],
+      ]);
+    }
+    if (person.kind === "staff" && thinking?.summary) {
       appendText(inspectorContentNode, "h3", null, "Reasoning summary");
       appendText(inspectorContentNode, "p", "thought-full", thinking.summary);
     }
@@ -722,7 +736,7 @@ function renderInspector() {
     addInspectorRows([
       ["Status", table.status],
       ["Customer", table.customer?.name],
-      ["Mood", table.customer?.mood],
+      ["Archetype", table.customer?.archetype_id],
       ["Visit phase", table.customer?.visit_phase],
       ["Order", table.customer ? getCustomerOrder(snapshot, table.customer.customer_id)?.order_id : null],
     ]);

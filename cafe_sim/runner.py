@@ -3,10 +3,8 @@
 import asyncio
 import random
 import time
-import uuid
 
 from agents.barista import BARISTA_ROSTER, run_barista
-from agents.customer import run_customer
 from config import (
     CLOSING_GRACE_SECONDS,
     CUSTOMER_SPAWN_INTERVAL,
@@ -14,8 +12,8 @@ from config import (
     MAX_CONCURRENT_CUSTOMERS,
     SIM_DURATION,
 )
+from customers.factory import build_customer_rng, spawn_deterministic_customer
 from logger import log_event
-from personas import PERSONAS
 from run_report import RunReporter
 from state_view import build_world_snapshot
 from world import WorldState
@@ -29,6 +27,7 @@ def next_customer_spawn_delay(base_interval: int) -> float:
 async def run_simulation():
     reporter = RunReporter()
     world = WorldState(reporter=reporter)
+    customer_rng = build_customer_rng()
     active_customers = set()
     barista_tasks = [
         asyncio.create_task(run_barista(world, barista["barista_id"], barista["display_name"]))
@@ -69,8 +68,7 @@ async def run_simulation():
                 log_event("RUNNER", f"At capacity ({MAX_CONCURRENT_CUSTOMERS} customers). Skipping spawn.")
                 continue
 
-            persona = random.choice(PERSONAS)
-            customer_id = f"cust_{uuid.uuid4().hex[:4]}"
+            profile, task = spawn_deterministic_customer(world, customer_rng)
             spawn_count += 1
 
             world.report(
@@ -78,13 +76,15 @@ async def run_simulation():
                 "customer_spawned",
                 {
                     "spawn_number": spawn_count,
-                    "customer_id": customer_id,
-                    "persona_name": persona["name"],
-                    "persona_mood": persona["mood"],
+                    "customer_id": profile.customer_id,
+                    "archetype_id": profile.archetype_id,
+                    "display_name": profile.display_name,
+                    "budget": profile.budget,
+                    "patience": profile.patience,
                 },
             )
-            log_event("RUNNER", f"Spawning customer #{spawn_count}: {persona['name']} ({persona['mood']})")
-            active_customers.add(asyncio.create_task(run_customer(persona, world, customer_id)))
+            log_event("RUNNER", f"Spawning customer #{spawn_count}: {profile.display_name} ({profile.archetype_id})")
+            active_customers.add(task)
 
         world.report(
             "RUNNER",

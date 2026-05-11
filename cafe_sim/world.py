@@ -53,6 +53,10 @@ class WorldState:
         initial_supplies: Optional[dict] = None,
         initial_menu: Optional[dict] = None,
     ):
+        try:
+            asyncio.get_event_loop()
+        except RuntimeError:
+            asyncio.set_event_loop(asyncio.new_event_loop())
         self._lock = asyncio.Lock()
         self.reporter = reporter
         self._event_context = {
@@ -238,6 +242,7 @@ class WorldState:
             **dict(visit),
             "held_items": list(visit.get("held_items", [])),
             "consumed_items": list(visit.get("consumed_items", [])),
+            "order_ids": list(visit.get("order_ids", [])),
         }
 
     async def register_customer_visit(self, customer_id: str, persona: dict, arrived_at: float):
@@ -249,10 +254,13 @@ class WorldState:
                 "visit_phase": "arrived",
                 "held_items": [],
                 "consumed_items": [],
+                "order_ids": [],
+                "active_order_id": None,
                 "received_order_at": None,
                 "consumption_started_at": None,
                 "left_with_unconsumed_items": False,
                 "arrived_at": arrived_at,
+                "left_at": None,
             }
 
     async def update_customer_visit(self, customer_id: str, **updates):
@@ -264,13 +272,16 @@ class WorldState:
                     "visit_phase": "arrived",
                     "held_items": [],
                     "consumed_items": [],
+                    "order_ids": [],
+                    "active_order_id": None,
                     "received_order_at": None,
                     "consumption_started_at": None,
                     "left_with_unconsumed_items": False,
+                    "left_at": None,
                 },
             )
             for key, value in updates.items():
-                if key in {"held_items", "consumed_items"} and value is not None:
+                if key in {"held_items", "consumed_items", "order_ids"} and value is not None:
                     visit[key] = list(value)
                 else:
                     visit[key] = value
@@ -370,6 +381,10 @@ class WorldState:
         visits = list(self._state["customer_visits"].values())
         visits_with_consumed_items = [visit for visit in visits if visit.get("consumed_items")]
         visits_left_with_unconsumed = [visit for visit in visits if visit.get("left_with_unconsumed_items")]
+        visits_by_archetype = {}
+        for visit in visits:
+            archetype_id = visit.get("archetype_id") or visit.get("mood") or "unknown"
+            visits_by_archetype.setdefault(archetype_id, []).append(visit)
         ready_waits = [order["ready_at"] - order["placed_at"] for order in orders if order.get("ready_at")]
         delivery_waits = [order["delivered_at"] - order["placed_at"] for order in delivered if order.get("delivered_at")]
         claim_waits = [order["claimed_at"] - order["placed_at"] for order in orders if order.get("claimed_at")]
@@ -384,6 +399,42 @@ class WorldState:
             for supply_id, supply in final_supplies.items()
             if supply["status"] == "out"
         }
+        customers_by_archetype = {
+            archetype_id: len(archetype_visits)
+            for archetype_id, archetype_visits in visits_by_archetype.items()
+        }
+        average_dwell_seconds_by_archetype = {}
+        reorders_by_archetype = {}
+        abandonment_by_archetype = {}
+        average_spend_by_archetype = {}
+        table_occupancy_seconds = 0.0
+        for archetype_id, archetype_visits in visits_by_archetype.items():
+            dwell_values = [
+                float(visit.get("dwell_seconds_actual") or 0)
+                for visit in archetype_visits
+                if visit.get("dwell_seconds_actual") is not None
+            ]
+            spends = [float(visit.get("budget_spent") or 0) for visit in archetype_visits]
+            average_dwell_seconds_by_archetype[archetype_id] = (
+                round(sum(dwell_values) / len(dwell_values), 1) if dwell_values else None
+            )
+            reorders_by_archetype[archetype_id] = sum(
+                max(0, int(visit.get("orders_placed") or 0) - 1)
+                for visit in archetype_visits
+            )
+            abandonment_by_archetype[archetype_id] = sum(
+                1
+                for visit in archetype_visits
+                if visit.get("leave_reason") in {"impatient", "no_seats", "nothing_appealing", "too_expensive"}
+            )
+            average_spend_by_archetype[archetype_id] = (
+                round(sum(spends) / len(spends), 2) if spends else None
+            )
+            for visit in archetype_visits:
+                claimed_at = visit.get("table_claimed_at")
+                released_at = visit.get("table_released_at")
+                if claimed_at and released_at and released_at >= claimed_at:
+                    table_occupancy_seconds += released_at - claimed_at
 
         return {
             "revenue": round(self._state["revenue"], 2),
@@ -400,6 +451,12 @@ class WorldState:
             "customers_consumed_items": len(visits_with_consumed_items),
             "items_consumed": sum(len(visit.get("consumed_items", [])) for visit in visits),
             "customers_left_with_unconsumed_items": len(visits_left_with_unconsumed),
+            "customers_by_archetype": customers_by_archetype,
+            "average_dwell_seconds_by_archetype": average_dwell_seconds_by_archetype,
+            "reorders_by_archetype": reorders_by_archetype,
+            "abandonment_by_archetype": abandonment_by_archetype,
+            "average_spend_by_archetype": average_spend_by_archetype,
+            "table_occupancy_seconds": round(table_occupancy_seconds, 1),
             "average_wait_seconds": round(sum(ready_waits) / len(ready_waits), 1) if ready_waits else None,
             "average_total_wait_seconds": round(sum(delivery_waits) / len(delivery_waits), 1) if delivery_waits else None,
             "average_claim_wait_seconds": round(sum(claim_waits) / len(claim_waits), 1) if claim_waits else None,

@@ -3,12 +3,10 @@
 import asyncio
 import random
 import time
-import uuid
 from typing import Optional
 
 from agents.barista import BARISTA_ROSTER, run_barista
 from campaign import CampaignState
-from agents.customer import run_customer
 from config import (
     CLOSING_GRACE_SECONDS,
     CUSTOMER_SPAWN_INTERVAL,
@@ -16,8 +14,8 @@ from config import (
     MAX_CONCURRENT_CUSTOMERS,
     SIM_DURATION,
 )
+from customers.factory import active_customer_row, build_customer_rng, spawn_deterministic_customer
 from logger import log_event
-from personas import PERSONAS
 from run_report import RunReporter
 from state_view import build_live_snapshot
 from world import WorldState
@@ -35,6 +33,7 @@ class SimulationController:
         self.phase = "idle"
         self.started_at = None
         self.spawn_count = 0
+        self.customer_rng = build_customer_rng()
         self._active_customers: dict[str, dict] = {}
         self._barista_tasks: dict[str, asyncio.Task] = {}
         self._runner_task: Optional[asyncio.Task] = None
@@ -71,6 +70,7 @@ class SimulationController:
             self._last_final_snapshot = None
             self._last_alerts = []
             self._last_report_paths = {}
+            self.customer_rng = build_customer_rng()
             self.running = True
             self.phase = "running"
             self.started_at = time.time()
@@ -221,29 +221,27 @@ class SimulationController:
                     },
                 )
                 return False
-            persona = random.choice(PERSONAS)
-            customer_id = f"cust_{uuid.uuid4().hex[:4]}"
+            profile, task = spawn_deterministic_customer(self.world, self.customer_rng)
             self.spawn_count += 1
-            task = asyncio.create_task(run_customer(persona, self.world, customer_id))
-            self._active_customers[customer_id] = {
+            row = active_customer_row(profile, time.time())
+            self._active_customers[profile.customer_id] = {
+                **row,
                 "task": task,
-                "customer_id": customer_id,
-                "name": persona["name"],
-                "mood": persona["mood"],
-                "arrived_at": time.time(),
             }
-            task.add_done_callback(lambda _: self._active_customers.pop(customer_id, None))
+            task.add_done_callback(lambda _: self._active_customers.pop(profile.customer_id, None))
             self.world.report(
                 "RUNNER",
                 "customer_spawned",
                 {
                     "spawn_number": self.spawn_count,
-                    "customer_id": customer_id,
-                    "persona_name": persona["name"],
-                    "persona_mood": persona["mood"],
+                    "customer_id": profile.customer_id,
+                    "archetype_id": profile.archetype_id,
+                    "display_name": profile.display_name,
+                    "budget": profile.budget,
+                    "patience": profile.patience,
                 },
             )
-            log_event("RUNNER", f"Spawned customer #{self.spawn_count}: {persona['name']} ({persona['mood']})")
+            log_event("RUNNER", f"Spawned customer #{self.spawn_count}: {profile.display_name} ({profile.archetype_id})")
             return True
 
     def set_spawn_interval(self, value: int):
@@ -290,7 +288,13 @@ class SimulationController:
                 {
                     "customer_id": customer["customer_id"],
                     "name": customer["name"],
+                    "display_name": customer.get("display_name", customer["name"]),
                     "mood": customer["mood"],
+                    "archetype_id": customer.get("archetype_id"),
+                    "budget": customer.get("budget"),
+                    "patience": customer.get("patience"),
+                    "seat_need": customer.get("seat_need"),
+                    "dwell_seconds_target": customer.get("dwell_seconds_target"),
                     "waiting_seconds": int(time.time() - customer["arrived_at"]),
                 }
             )

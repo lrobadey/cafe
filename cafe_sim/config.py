@@ -7,7 +7,6 @@ from openai import AsyncOpenAI
 
 # Model routing
 BARISTA_MODEL = "gpt-5.4-mini"
-CUSTOMER_MODEL = "gpt-5.4-mini"
 
 # OpenAI Responses API controls
 REASONING_EFFORT = "high"
@@ -18,13 +17,15 @@ STORE_RESPONSES = True
 CUSTOMER_SPAWN_INTERVAL = 30
 CUSTOMER_SPAWN_JITTER = 0.5
 BARISTA_POLL_INTERVAL = 5
-CUSTOMER_MAX_WAIT = 90
 SIM_DURATION = 600
 CLOSING_GRACE_SECONDS = 20
 
 # Concurrency
 MAX_CONCURRENT_CUSTOMERS = 4
-MAX_CUSTOMER_HOPS = 16
+
+# Deterministic customer generation. Set to an integer for reproducible
+# customer archetype/profile/order/reorder choices.
+CUSTOMER_RANDOM_SEED = None
 
 # Menu (name, price, prep_seconds, category)
 MENU = {

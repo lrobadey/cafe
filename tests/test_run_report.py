@@ -91,6 +91,15 @@ class RunReporterTests(unittest.TestCase):
             "customer_id": "cust_test",
             "name": "Test Customer",
             "mood": "settled",
+            "archetype_id": "leisure_customer",
+            "budget": 12.0,
+            "budget_spent": 5.5,
+            "patience": 60,
+            "seat_need": "medium",
+            "orders_placed": 1,
+            "order_ids": ["ord_test"],
+            "active_order_id": None,
+            "dwell_seconds_target": 90,
             "visit_phase": "consuming",
             "held_items": ["latte", "muffin"],
             "consumed_items": ["latte"],
@@ -114,8 +123,40 @@ class RunReporterTests(unittest.TestCase):
 
         customer = snapshot["active_customers"][0]
         self.assertEqual(customer["visit_phase"], "consuming")
+        self.assertEqual(customer["archetype_id"], "leisure_customer")
+        self.assertEqual(customer["budget_spent"], 5.5)
+        self.assertEqual(customer["orders_placed"], 1)
         self.assertEqual(customer["held_item_names"], ["Latte", "Blueberry Muffin"])
         self.assertEqual(customer["consumed_item_names"], ["Latte"])
+
+    def test_shift_summary_includes_archetype_metrics(self):
+        world = WorldState()
+        world._state["customer_visits"]["cust_remote"] = {
+            "customer_id": "cust_remote",
+            "archetype_id": "remote_worker",
+            "orders_placed": 2,
+            "budget_spent": 10.0,
+            "dwell_seconds_actual": 120.0,
+            "table_claimed_at": 10.0,
+            "table_released_at": 140.0,
+            "leave_reason": "satisfied",
+        }
+        world._state["customer_visits"]["cust_fast"] = {
+            "customer_id": "cust_fast",
+            "archetype_id": "hurried_commuter",
+            "orders_placed": 0,
+            "budget_spent": 0.0,
+            "dwell_seconds_actual": 0.0,
+            "leave_reason": "impatient",
+        }
+
+        summary = world.get_shift_summary()
+
+        self.assertEqual(summary["customers_by_archetype"]["remote_worker"], 1)
+        self.assertEqual(summary["reorders_by_archetype"]["remote_worker"], 1)
+        self.assertEqual(summary["abandonment_by_archetype"]["hurried_commuter"], 1)
+        self.assertEqual(summary["average_spend_by_archetype"]["remote_worker"], 10.0)
+        self.assertEqual(summary["table_occupancy_seconds"], 130.0)
 
     def test_shift_summary_includes_stockout_metrics(self):
         world = WorldState()
