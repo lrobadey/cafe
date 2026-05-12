@@ -189,7 +189,8 @@ The main knobs live in `cafe_sim/config.py`.
 | `CLOSING_GRACE_SECONDS` | `20` | Extra time before closeout |
 | `CUSTOMER_SPAWN_INTERVAL` | `30` | Base seconds between customer spawns |
 | `CUSTOMER_SPAWN_JITTER` | `0.5` | Random spread around spawn interval |
-| `MAX_CONCURRENT_CUSTOMERS` | `4` | Active customer cap |
+| `MAX_CONCURRENT_CUSTOMERS` | `8` | Active customer cap |
+| `TABLE_SEAT_CAPACITY` | `2` | Seats available at each table |
 | `CUSTOMER_RANDOM_SEED` | `None` | Optional seed for reproducible customer archetypes, profiles, orders, and reorders |
 | `BARISTA_POLL_INTERVAL` | `5` | Idle wait between barista work cycles |
 

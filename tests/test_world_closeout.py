@@ -21,6 +21,57 @@ class WorldCloseoutTests(unittest.IsolatedAsyncioTestCase):
     def tearDownClass(cls):
         asyncio.set_event_loop(asyncio.new_event_loop())
 
+    async def test_tables_hold_two_customers_and_release_individually(self):
+        world = WorldState()
+
+        self.assertEqual(await world.claim_table("cust_one"), "t1")
+        self.assertEqual(await world.claim_table("cust_two"), "t1")
+        self.assertEqual(await world.claim_table("cust_three"), "t2")
+
+        tables = world.get_tables()
+        self.assertEqual(tables["t1"]["customer_ids"], ["cust_one", "cust_two"])
+        self.assertEqual(tables["t1"]["open_seats"], 0)
+        self.assertEqual(tables["t2"]["customer_ids"], ["cust_three"])
+        self.assertEqual(tables["t2"]["open_seats"], 1)
+        self.assertEqual(world.get_table_availability()["t1"], "occupied")
+        self.assertEqual(world.count_empty_tables(), 3)
+
+        await world.release_table("cust_one")
+
+        tables = world.get_tables()
+        self.assertEqual(tables["t1"]["customer_ids"], ["cust_two"])
+        self.assertEqual(tables["t1"]["status"], "occupied")
+        self.assertEqual(tables["t1"]["open_seats"], 1)
+
+        await world.release_table("cust_two")
+
+        tables = world.get_tables()
+        self.assertEqual(tables["t1"]["customer_ids"], [])
+        self.assertEqual(tables["t1"]["status"], "empty")
+        self.assertEqual(tables["t1"]["open_seats"], 2)
+
+    async def test_snapshot_includes_multiple_customers_at_table(self):
+        world = WorldState()
+        active_customers = [
+            {"customer_id": "cust_one", "name": "One", "display_name": "One"},
+            {"customer_id": "cust_two", "name": "Two", "display_name": "Two"},
+        ]
+        await world.claim_table("cust_one")
+        await world.claim_table("cust_two")
+
+        snapshot = build_world_snapshot(
+            world,
+            active_customers=active_customers,
+            sim_state={"running": True, "phase": "running"},
+        )
+
+        table = snapshot["tables"][0]
+        self.assertEqual(table["table_id"], "t1")
+        self.assertEqual(table["customer_ids"], ["cust_one", "cust_two"])
+        self.assertEqual([customer["customer_id"] for customer in table["customers"]], ["cust_one", "cust_two"])
+        self.assertEqual(snapshot["active_customers"][0]["table_id"], "t1")
+        self.assertEqual(snapshot["active_customers"][1]["table_id"], "t1")
+
     async def test_closeout_marks_unfinished_orders_and_releases_tables(self):
         world = WorldState()
         pending_id = await world.place_order("cust_pending", ["espresso"])
@@ -53,6 +104,7 @@ class WorldCloseoutTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(world.get_table_availability()["t1"], "empty")
         self.assertEqual(len(closeout["closed_orders"]), 4)
         self.assertEqual(len(closeout["released_tables"]), 1)
+        self.assertEqual(closeout["released_tables"][0]["customer_ids"], ["cust_pending"])
 
         staff = world.get_staff()
         self.assertEqual(staff["barista_alex"]["status"], "idle")

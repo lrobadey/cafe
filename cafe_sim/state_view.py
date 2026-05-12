@@ -92,11 +92,11 @@ def _build_customer_rows(world, active_customers: list[dict]) -> dict:
 
 
 def _table_by_customer(world) -> dict:
-    return {
-        table["customer_id"]: table_id
-        for table_id, table in world.get_tables().items()
-        if table["customer_id"]
-    }
+    table_by_customer = {}
+    for table_id, table in world.get_tables().items():
+        for customer_id in table.get("customer_ids", []):
+            table_by_customer[customer_id] = table_id
+    return table_by_customer
 
 
 def _open_order_by_customer(world) -> dict:
@@ -112,8 +112,16 @@ def _build_table_rows(world, customer_by_id: dict) -> list[dict]:
         {
             "table_id": table_id,
             "status": table["status"],
-            "customer_id": table["customer_id"],
-            "customer": customer_by_id.get(table["customer_id"]),
+            "customer_ids": list(table.get("customer_ids", [])),
+            "customers": [
+                customer_by_id[customer_id]
+                for customer_id in table.get("customer_ids", [])
+                if customer_id in customer_by_id
+            ],
+            "customer_id": table.get("customer_id"),
+            "customer": customer_by_id.get(table.get("customer_id")),
+            "seat_capacity": table.get("seat_capacity"),
+            "open_seats": table.get("open_seats"),
         }
         for table_id, table in world.get_tables().items()
     ]

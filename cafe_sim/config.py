@@ -21,7 +21,7 @@ SIM_DURATION = 600
 CLOSING_GRACE_SECONDS = 20
 
 # Concurrency
-MAX_CONCURRENT_CUSTOMERS = 4
+MAX_CONCURRENT_CUSTOMERS = 8
 
 # Deterministic customer generation. Set to an integer for reproducible
 # customer archetype/profile/order/reorder choices.
@@ -57,6 +57,7 @@ MENU_RECIPES = {
 
 # Tables
 TABLE_IDS = ["t1", "t2", "t3", "t4"]
+TABLE_SEAT_CAPACITY = 2
 
 
 def load_local_env() -> None:

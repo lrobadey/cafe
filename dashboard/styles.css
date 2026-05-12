@@ -631,13 +631,22 @@ button:disabled {
   font-weight: 800;
 }
 
-.seated-person {
+.seated-people {
   width: min(100%, 180px);
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  align-items: center;
+}
+
+.seated-person {
+  min-width: 0;
 }
 
 .seated-person .person {
   justify-content: center;
-  min-height: 56px;
+  min-height: 52px;
+  padding: 6px;
 }
 
 .seated-person .person-nameplate {

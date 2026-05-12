@@ -5,7 +5,7 @@ import time
 import uuid
 from typing import Callable, Optional
 
-from config import MENU, MENU_RECIPES, SUPPLIES, TABLE_IDS
+from config import MENU, MENU_RECIPES, SUPPLIES, TABLE_IDS, TABLE_SEAT_CAPACITY
 from logger import log_event
 from run_report import RunReporter
 
@@ -68,7 +68,7 @@ class WorldState:
         self._state = {
             "menu": {k: dict(v) for k, v in (initial_menu or MENU).items()},
             "supplies": {k: dict(v) for k, v in (initial_supplies or SUPPLIES).items()},
-            "tables": {tid: {"status": "empty", "customer_id": None} for tid in TABLE_IDS},
+            "tables": {tid: {"customer_ids": []} for tid in TABLE_IDS},
             "order_queue": [],
             "event_log": [],
             "agent_thinking": {},
@@ -151,7 +151,7 @@ class WorldState:
         }
 
     def get_table_availability(self) -> dict:
-        return {tid: t["status"] for tid, t in self._state["tables"].items()}
+        return {tid: self._table_status(t) for tid, t in self._state["tables"].items()}
 
     def get_menu_item(self, item_id: str) -> Optional[dict]:
         item = self._state["menu"].get(item_id)
@@ -202,7 +202,10 @@ class WorldState:
         )
 
     def count_empty_tables(self) -> int:
-        return sum(1 for t in self._state["tables"].values() if t["status"] == "empty")
+        return sum(1 for t in self._state["tables"].values() if len(t["customer_ids"]) < TABLE_SEAT_CAPACITY)
+
+    def _table_status(self, table: dict) -> str:
+        return "occupied" if table["customer_ids"] else "empty"
 
     def get_order(self, order_id: str) -> Optional[dict]:
         for order in self._state["order_queue"]:
@@ -217,7 +220,16 @@ class WorldState:
         return {staff_id: dict(staff) for staff_id, staff in self._state["staff"].items()}
 
     def get_tables(self) -> dict:
-        return {table_id: dict(table) for table_id, table in self._state["tables"].items()}
+        return {
+            table_id: {
+                "status": self._table_status(table),
+                "customer_ids": list(table["customer_ids"]),
+                "customer_id": table["customer_ids"][0] if table["customer_ids"] else None,
+                "seat_capacity": TABLE_SEAT_CAPACITY,
+                "open_seats": max(0, TABLE_SEAT_CAPACITY - len(table["customer_ids"])),
+            }
+            for table_id, table in self._state["tables"].items()
+        }
 
     def get_orders(self) -> list[dict]:
         return [
@@ -624,17 +636,17 @@ class WorldState:
                 )
 
             for table_id, table in self._state["tables"].items():
-                if table["status"] != "occupied":
+                if not table["customer_ids"]:
                     continue
                 released_tables.append(
                     {
                         "table_id": table_id,
-                        "customer_id": table["customer_id"],
+                        "customer_ids": list(table["customer_ids"]),
+                        "customer_id": table["customer_ids"][0] if table["customer_ids"] else None,
                         "close_reason": reason,
                     }
                 )
-                table["status"] = "empty"
-                table["customer_id"] = None
+                table["customer_ids"] = []
 
             for staff_id, staff in self._state["staff"].items():
                 if staff["role"] != "barista":
@@ -661,10 +673,11 @@ class WorldState:
                 f"{order['order_id']} {order['from_status']} -> {order['to_status']} ({reason})",
             )
         for table in released_tables:
+            customer_label = ", ".join(table["customer_ids"])
             self.log(
                 "RUNNER",
                 "close_table",
-                f"{table['table_id']} released from {table['customer_id']} ({reason})",
+                f"{table['table_id']} released from {customer_label} ({reason})",
             )
         for staff in cleared_staff:
             self.log(
@@ -802,9 +815,10 @@ class WorldState:
     async def claim_table(self, customer_id: str) -> Optional[str]:
         async with self._lock:
             for table_id, table in self._state["tables"].items():
-                if table["status"] == "empty":
-                    table["status"] = "occupied"
-                    table["customer_id"] = customer_id
+                if customer_id in table["customer_ids"]:
+                    return table_id
+                if len(table["customer_ids"]) < TABLE_SEAT_CAPACITY:
+                    table["customer_ids"].append(customer_id)
                     self.log(customer_id, "claim_table", table_id)
                     return table_id
         return None
@@ -812,9 +826,9 @@ class WorldState:
     async def release_table(self, customer_id: str):
         async with self._lock:
             for table in self._state["tables"].values():
-                if table["customer_id"] == customer_id:
-                    table["status"] = "empty"
-                    table["customer_id"] = None
+                if customer_id in table["customer_ids"]:
+                    table["customer_ids"].remove(customer_id)
+                    break
         self.log(customer_id, "release_table", "done")
 
     async def claim_order(self, barista_id: str, order_id: str) -> bool:

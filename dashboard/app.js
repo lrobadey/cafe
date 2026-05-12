@@ -512,13 +512,16 @@ function renderTables(snapshot) {
   (snapshot.tables || []).forEach((table) => {
     const node = selectable(createElement("div", `cafe-table ${table.status}`), "table", table.table_id);
     appendText(node, "span", "table-id", table.table_id.toUpperCase());
-    const customer = table.customer;
-    if (customer) {
-      const customerSlot = createElement("div", "seated-person");
-      renderPerson(customerSlot, customer, thinkingByAgent.get(customer.customer_id), "customer");
-      node.appendChild(customerSlot);
-      const order = getCustomerOrder(snapshot, customer.customer_id);
-      appendText(node, "span", "table-note", order ? `${pipelineLabels[order.status]} order` : customer.visit_phase || "seated");
+    const customers = table.customers || (table.customer ? [table.customer] : []);
+    if (customers.length) {
+      const seats = createElement("div", "seated-people");
+      customers.forEach((customer) => {
+        const customerSlot = createElement("div", "seated-person");
+        renderPerson(customerSlot, customer, thinkingByAgent.get(customer.customer_id), "customer");
+        seats.appendChild(customerSlot);
+      });
+      node.appendChild(seats);
+      appendText(node, "span", "table-note", `${customers.length}/${table.seat_capacity || 2} seated`);
     } else {
       appendText(node, "span", "table-note", "Open");
     }
@@ -733,12 +736,14 @@ function renderInspector() {
       appendText(inspectorContentNode, "p", null, "Table not found.");
       return;
     }
+    const customers = table.customers || (table.customer ? [table.customer] : []);
     addInspectorRows([
       ["Status", table.status],
-      ["Customer", table.customer?.name],
-      ["Archetype", table.customer?.archetype_id],
-      ["Visit phase", table.customer?.visit_phase],
-      ["Order", table.customer ? getCustomerOrder(snapshot, table.customer.customer_id)?.order_id : null],
+      ["Seats", `${customers.length}/${table.seat_capacity || 2}`],
+      ["Customers", customers.map((customer) => customer.display_name || customer.name || customer.customer_id).join(", ")],
+      ["Archetypes", customers.map((customer) => customer.archetype_id).filter(Boolean).join(", ")],
+      ["Visit phases", customers.map((customer) => customer.visit_phase).filter(Boolean).join(", ")],
+      ["Orders", customers.map((customer) => getCustomerOrder(snapshot, customer.customer_id)?.order_id).filter(Boolean).join(", ")],
     ]);
     return;
   }
