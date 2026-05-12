@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional
 
 from config import MENU, SUPPLIES
+from supplies import copy_supply, copy_supplies as normalize_supplies
 
 
 CAMPAIGN_ROOT = Path(__file__).resolve().parent.parent / "runs" / "campaigns"
@@ -36,7 +37,11 @@ def date_label_for_day(day_index: int) -> str:
 
 
 def copy_supplies(supplies: dict) -> dict:
-    return {supply_id: dict(supply) for supply_id, supply in supplies.items()}
+    return normalize_supplies(supplies)
+
+
+def supplies_snapshot(supplies: dict) -> dict:
+    return normalize_supplies(supplies, include_status=True)
 
 
 def copy_menu(menu: dict) -> dict:
@@ -203,6 +208,7 @@ class CampaignState:
         satisfaction = max(0, min(100, 70 + (delivered * 4) - (not_delivered * 8)))
         reputation_delta = max(-5, min(5, round((satisfaction - 70) / 10)))
         final_supplies = copy_supplies(metrics.get("final_supplies") or self.persistent_supplies)
+        final_supplies_snapshot = supplies_snapshot(final_supplies)
 
         summary = {
             "day_id": self.current_day.day_id,
@@ -225,7 +231,7 @@ class CampaignState:
             "tomorrow_warnings": self._build_tomorrow_warnings(metrics, alerts),
             "alerts": list(alerts or []),
             "closeout": deepcopy(closeout or {}),
-            "final_supplies": final_supplies,
+            "final_supplies": final_supplies_snapshot,
         }
 
         self.money = round(self.money + revenue, 2)
@@ -273,6 +279,7 @@ class CampaignState:
         if not supply or quantity == 0:
             return {"ok": False, "cost": 0.0}
         cost = round(quantity * RESTOCK_UNIT_COST, 2)
+        supply.pop("status", None)
         supply["quantity"] = int(supply.get("quantity", 0)) + quantity
         self.money = round(self.money - cost, 2)
         self.cumulative_costs = round(self.cumulative_costs + cost, 2)
@@ -285,7 +292,7 @@ class CampaignState:
         self.current_day.starting_supplies = copy_supplies(self.persistent_supplies)
         self.current_day.starting_cash = self.money
         self.save()
-        return {"ok": True, "cost": cost, "supply": dict(supply)}
+        return {"ok": True, "cost": cost, "supply": copy_supply(supply, include_status=True)}
 
     def campaign_snapshot(self) -> dict:
         return {
@@ -350,7 +357,7 @@ class CampaignState:
             "cumulative_revenue": self.cumulative_revenue,
             "cumulative_costs": self.cumulative_costs,
             "reputation": self.reputation,
-            "persistent_supplies": self.persistent_supplies,
+            "persistent_supplies": copy_supplies(self.persistent_supplies),
             "menu_state": self.menu_state,
             "day_summaries": self.day_summaries,
             "current_day": self.current_day.to_snapshot(),
@@ -365,11 +372,7 @@ class CampaignState:
         )
         (self.campaign_dir / "campaign_summary.json").write_text(
             json.dumps(
-                {
-                    "campaign": self.campaign_snapshot(),
-                    "history": self.history_snapshot(),
-                    "updated_at": utc_now(),
-                },
+                self._summary_payload(),
                 indent=2,
                 sort_keys=True,
             )
@@ -421,6 +424,13 @@ class CampaignState:
         if not completed:
             return ["No staff completions were recorded today."]
         return [f"{staff_id} completed {count} order(s)." for staff_id, count in completed.items()]
+
+    def _summary_payload(self) -> dict:
+        return {
+            "campaign": self.campaign_snapshot(),
+            "history": self.history_snapshot(),
+            "updated_at": utc_now(),
+        }
 
     def _build_tomorrow_warnings(self, metrics: dict, alerts: list[dict]) -> list[str]:
         warnings = [alert.get("message") for alert in alerts or [] if alert.get("message")]

@@ -69,7 +69,7 @@ async def _run_visit(profile: CustomerProfile, runtime: CustomerRuntimeState, wo
     await _maybe_claim_seat(profile, runtime, world)
     if runtime.done:
         return
-    await _wait_for_active_order(profile, runtime, world)
+    await _wait_for_active_order(profile, runtime, world, rng)
     if runtime.done:
         return
 
@@ -146,7 +146,6 @@ async def _place_order(profile: CustomerProfile, runtime: CustomerRuntimeState, 
     runtime.active_order_id = order_id
     runtime.order_ids.append(order_id)
     runtime.orders_placed += 1
-    runtime.budget_spent += float(order.get("total_price", 0.0))
     runtime.visit_phase = "waiting"
     await _sync_visit(profile, runtime, world)
     world.report(
@@ -182,7 +181,12 @@ async def _maybe_claim_seat(profile: CustomerProfile, runtime: CustomerRuntimeSt
             await _leave(profile, runtime, world, "no_seats", friction=breakdown)
 
 
-async def _wait_for_active_order(profile: CustomerProfile, runtime: CustomerRuntimeState, world: "WorldState"):
+async def _wait_for_active_order(
+    profile: CustomerProfile,
+    runtime: CustomerRuntimeState,
+    world: "WorldState",
+    rng: Random,
+):
     while runtime.active_order_id and not runtime.done:
         order = world.get_order(runtime.active_order_id)
         if not order:
@@ -193,6 +197,7 @@ async def _wait_for_active_order(profile: CustomerProfile, runtime: CustomerRunt
         if order["status"] == "ready":
             await world.mark_order_delivered(order["order_id"])
             runtime.held_items.extend(order["items"])
+            runtime.budget_spent += float(order.get("total_price", 0.0))
             runtime.active_order_id = None
             runtime.visit_phase = "received_order"
             now = time.time()
@@ -206,6 +211,7 @@ async def _wait_for_active_order(profile: CustomerProfile, runtime: CustomerRunt
             await _sync_visit(profile, runtime, world)
             if await _should_leave_from_current_friction(profile, runtime, world, stockout_disappointment=1):
                 return
+            await _try_replacement_order_after_failure(profile, runtime, world, rng)
             return
 
         breakdown = friction_breakdown(
@@ -219,6 +225,26 @@ async def _wait_for_active_order(profile: CustomerProfile, runtime: CustomerRunt
             await _leave(profile, runtime, world, leave_reason_from_friction(breakdown), friction=breakdown)
             return
         await asyncio.sleep(POLL_SECONDS)
+
+
+async def _try_replacement_order_after_failure(
+    profile: CustomerProfile,
+    runtime: CustomerRuntimeState,
+    world: "WorldState",
+    rng: Random,
+):
+    if runtime.done or runtime.active_order_id:
+        return
+    if runtime.orders_placed >= profile.max_orders_per_visit:
+        return
+    budget_remaining = profile.budget - runtime.budget_spent
+    if budget_remaining <= 0:
+        return
+    order_items = choose_order(profile, world.get_menu_availability(), budget_remaining, rng)
+    if not order_items:
+        return
+    if await _place_order(profile, runtime, world, order_items):
+        await _wait_for_active_order(profile, runtime, world, rng)
 
 
 async def _consume_held_items(profile: CustomerProfile, runtime: CustomerRuntimeState, world: "WorldState"):
@@ -278,7 +304,7 @@ async def _dwell(
         ):
             order_items = choose_order(profile, world.get_menu_availability(), profile.budget - runtime.budget_spent, rng)
             if order_items and await _place_order(profile, runtime, world, order_items):
-                await _wait_for_active_order(profile, runtime, world)
+                await _wait_for_active_order(profile, runtime, world, rng)
                 if runtime.done:
                     return
                 await _consume_held_items(profile, runtime, world)

@@ -52,6 +52,21 @@ async def prepare_next_order(world, customer_id, seen):
     raise AssertionError("No order appeared for customer.")
 
 
+async def fail_next_order_from_stockout(world, customer_id, seen, supply_id):
+    for _ in range(100):
+        for order in world.get_orders():
+            if order["customer_id"] == customer_id and order["order_id"] not in seen:
+                seen.add(order["order_id"])
+                world._state["supplies"][supply_id]["quantity"] = 0
+                await world.claim_order("barista_alex", order["order_id"])
+                result = await world.prepare_order("barista_alex", order["order_id"])
+                if result["ok"]:
+                    raise AssertionError("Expected stockout preparation failure.")
+                return order["order_id"]
+        await asyncio.sleep(0.02)
+    raise AssertionError("No order appeared for customer.")
+
+
 class CustomerProfileGenerationTests(unittest.TestCase):
     def test_seeded_profiles_repeat(self):
         first_rng = random.Random(123)
@@ -192,7 +207,71 @@ class DeterministicCustomerVisitTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(world.get_table_availability()["t1"], "empty")
         self.assertEqual(world.get_shift_summary()["reorders_by_archetype"]["remote_worker"], 1)
 
+    async def test_customer_can_place_replacement_order_after_stockout_failure(self):
+        world = WorldState()
+        world.set_menu_item_availability("espresso", False)
+        world.set_menu_item_availability("cold_brew", False)
+        world.set_menu_item_availability("tea", False)
+        world.set_menu_item_availability("muffin", False)
+        profile = make_profile(
+            customer_id="cust_stockout_retry",
+            preferred_items=["latte", "espresso"],
+            disliked_items=[],
+            budget=6.0,
+            max_orders_per_visit=2,
+            patience=95,
+        )
+        seen = set()
+
+        with patch("customers.deterministic.POLL_SECONDS", 0.02):
+            task = asyncio.create_task(run_deterministic_customer(profile, world, random.Random(3)))
+            failed_order_id = await fail_next_order_from_stockout(world, "cust_stockout_retry", seen, "milk")
+            world.set_menu_item_availability("espresso", True)
+            replacement_order_id = await prepare_next_order(world, "cust_stockout_retry", seen)
+            await asyncio.wait_for(task, timeout=3)
+
+        visit = world.get_customer_visit("cust_stockout_retry")
+        orders = {order["order_id"]: order for order in world.get_orders()}
+        self.assertEqual(orders[failed_order_id]["status"], "failed")
+        self.assertEqual(orders[failed_order_id]["close_reason"], "stockout")
+        self.assertEqual(orders[replacement_order_id]["status"], "delivered")
+        self.assertEqual(orders[replacement_order_id]["items"], ["espresso"])
+        self.assertEqual(visit["orders_placed"], 2)
+        self.assertEqual(visit["order_ids"], [failed_order_id, replacement_order_id])
+        self.assertEqual(visit["consumed_items"], ["espresso"])
+        self.assertEqual(visit["budget_spent"], 3.0)
+        self.assertEqual(visit["visit_phase"], "done")
+
+    async def test_customer_leaves_after_stockout_when_patience_is_exceeded(self):
+        world = WorldState()
+        world.set_menu_item_availability("espresso", False)
+        world.set_menu_item_availability("cold_brew", False)
+        world.set_menu_item_availability("tea", False)
+        world.set_menu_item_availability("muffin", False)
+        profile = make_profile(
+            customer_id="cust_stockout_leave",
+            preferred_items=["latte", "espresso"],
+            disliked_items=[],
+            budget=12.0,
+            max_orders_per_visit=2,
+            patience=11,
+            queue_sensitivity="low",
+        )
+        seen = set()
+
+        with patch("customers.deterministic.POLL_SECONDS", 0.02):
+            task = asyncio.create_task(run_deterministic_customer(profile, world, random.Random(3)))
+            failed_order_id = await fail_next_order_from_stockout(world, "cust_stockout_leave", seen, "milk")
+            world.set_menu_item_availability("espresso", True)
+            await asyncio.wait_for(task, timeout=3)
+
+        visit = world.get_customer_visit("cust_stockout_leave")
+        self.assertEqual(world.get_order(failed_order_id)["status"], "failed")
+        self.assertEqual(visit["orders_placed"], 1)
+        self.assertEqual(visit["order_ids"], [failed_order_id])
+        self.assertEqual(visit["leave_reason"], "nothing_appealing")
+        self.assertEqual(visit["visit_phase"], "done")
+
 
 if __name__ == "__main__":
     unittest.main()
-

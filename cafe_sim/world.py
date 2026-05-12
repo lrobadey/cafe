@@ -8,6 +8,7 @@ from typing import Callable, Optional
 from config import MENU, MENU_RECIPES, SUPPLIES, TABLE_IDS, TABLE_SEAT_CAPACITY
 from logger import log_event
 from run_report import RunReporter
+from supplies import copy_supplies, supply_status
 
 
 ORDER_PENDING = "pending"
@@ -67,7 +68,7 @@ class WorldState:
         }
         self._state = {
             "menu": {k: dict(v) for k, v in (initial_menu or MENU).items()},
-            "supplies": {k: dict(v) for k, v in (initial_supplies or SUPPLIES).items()},
+            "supplies": copy_supplies(initial_supplies or SUPPLIES),
             "tables": {tid: {"customer_ids": []} for tid in TABLE_IDS},
             "order_queue": [],
             "event_log": [],
@@ -158,21 +159,10 @@ class WorldState:
         return dict(item) if item else None
 
     def get_supplies(self) -> dict:
-        return {
-            supply_id: {
-                **dict(supply),
-                "status": self._get_supply_status(supply),
-            }
-            for supply_id, supply in self._state["supplies"].items()
-        }
+        return copy_supplies(self._state["supplies"], include_status=True)
 
     def _get_supply_status(self, supply: dict) -> str:
-        quantity = supply.get("quantity", 0)
-        if quantity <= 0:
-            return "out"
-        if quantity <= supply.get("low_threshold", 0):
-            return "low"
-        return "normal"
+        return supply_status(supply)
 
     def _get_recipe_requirements(self, items: list[str]) -> dict[str, int]:
         requirements = {}
@@ -602,6 +592,7 @@ class WorldState:
         supply = self._state["supplies"].get(supply_id)
         if not supply:
             return False
+        supply.pop("status", None)
         supply["quantity"] = int(supply.get("quantity", 0)) + max(0, int(quantity))
         self.log("RUNNER", "restock", f"{supply_id} +{quantity}")
         return True
