@@ -165,6 +165,14 @@ async def restock(payload: RestockPayload):
     return {"ok": True, **result}
 
 
+@app.post("/api/manager/restock")
+async def manager_restock():
+    result = await controller.run_manager_restock_plan()
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result.get("error") or "Manager could not plan restocks.")
+    return result
+
+
 @app.post("/api/staff/schedule")
 async def schedule_staff():
     raise HTTPException(status_code=409, detail="Staff scheduling is planned for a later campaign slice.")

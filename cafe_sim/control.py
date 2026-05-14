@@ -6,6 +6,7 @@ import time
 from typing import Optional
 
 from agents.barista import BARISTA_ROSTER, run_barista
+from agents.manager import run_manager_restock_plan as run_manager_agent_restock_plan
 from campaign import CampaignState
 from config import (
     CLOSING_GRACE_SECONDS,
@@ -42,10 +43,14 @@ class SimulationController:
         self._last_final_snapshot: Optional[dict] = None
         self._last_alerts: list[dict] = []
         self._last_report_paths: dict = {}
+        self._manager_running = False
+        self._last_manager_result: Optional[dict] = None
         self._lock = asyncio.Lock()
 
     async def start(self):
         async with self._lock:
+            if self._manager_running:
+                return
             if self.phase in {"running", "closing"}:
                 return
             if self.campaign.current_day.phase == "settled":
@@ -132,6 +137,7 @@ class SimulationController:
         self._last_final_snapshot = None
         self._last_alerts = []
         self._last_report_paths = {}
+        self._last_manager_result = None
         return True
 
     async def _begin_closing(self, reason: str):
@@ -197,6 +203,7 @@ class SimulationController:
             self.started_at = None
             self.spawn_count = 0
             self._reporter = None
+            self._last_manager_result = None
             log_event("RUNNER", "Dashboard simulation reset.")
 
     async def spawn_customer(self):
@@ -267,6 +274,43 @@ class SimulationController:
         if result.get("ok"):
             self.world.restock_supply(supply_id, quantity)
         return result
+
+    async def run_manager_restock_plan(self) -> dict:
+        async with self._lock:
+            if self._manager_running:
+                return {"ok": False, "error": "Manager is already planning a restock."}
+            if self.phase in {"running", "closing"} or self.campaign.current_day.phase != "planning":
+                return {"ok": False, "error": "Manager restock planning is only available during day planning."}
+            if not self.campaign.day_summaries:
+                return {"ok": False, "error": "Manager needs a completed day summary before planning restocks."}
+            self._manager_running = True
+
+        self.world.report("manager", "agent_started", {"agent_type": "manager"})
+        try:
+            result = await run_manager_agent_restock_plan(self)
+            payload = {"ok": True, **result}
+            self._last_manager_result = payload
+            self.world.report(
+                "manager",
+                "manager_plan_finalized",
+                {
+                    "agent_type": "manager",
+                    "manager_summary": payload.get("manager_summary"),
+                    "tool_result_count": len(payload.get("tool_results") or []),
+                    "plan": payload.get("plan"),
+                },
+            )
+            return payload
+        finally:
+            async with self._lock:
+                self._manager_running = False
+
+    def get_manager_state(self) -> dict:
+        return {
+            "running": self._manager_running,
+            "last_summary": (self._last_manager_result or {}).get("manager_summary"),
+            "last_tool_result_count": len((self._last_manager_result or {}).get("tool_results") or []),
+        }
 
     def get_simulation_state(self) -> dict:
         elapsed = int(time.time() - self.started_at) if self.started_at else 0

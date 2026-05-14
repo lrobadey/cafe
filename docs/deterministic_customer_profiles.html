@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Deterministic Customer Profiles</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #20211f;
+      --muted: #636761;
+      --line: #d8ddd2;
+      --paper: #f7f4ec;
+      --surface: #ffffff;
+      --accent: #b45327;
+      --green: #3f6f58;
+      --blue: #3f627b;
+      --gold: #9a712a;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: var(--ink);
+      background: var(--paper);
+      line-height: 1.45;
+    }
+
+    main {
+      width: min(1080px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 52px 0 64px;
+    }
+
+    header {
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+      gap: 40px;
+      align-items: end;
+      padding-bottom: 34px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin: 0;
+    }
+
+    h1 {
+      max-width: 760px;
+      font-size: clamp(2.7rem, 7vw, 5.8rem);
+      line-height: 0.93;
+      letter-spacing: 0;
+    }
+
+    h2 {
+      font-size: clamp(1.35rem, 2.5vw, 2rem);
+      letter-spacing: 0;
+    }
+
+    h3 {
+      font-size: 1rem;
+      letter-spacing: 0;
+    }
+
+    .lede {
+      max-width: 520px;
+      color: var(--muted);
+      font-size: 1.08rem;
+    }
+
+    .tag {
+      display: inline-flex;
+      width: fit-content;
+      margin-bottom: 18px;
+      padding: 6px 10px;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      color: var(--accent);
+      background: rgba(255, 255, 255, 0.55);
+      font-size: 0.78rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .truth {
+      padding: 22px;
+      border-left: 4px solid var(--accent);
+      background: rgba(255, 255, 255, 0.68);
+    }
+
+    .truth strong {
+      display: block;
+      margin-bottom: 8px;
+    }
+
+    section {
+      padding: 38px 0 0;
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 18px;
+    }
+
+    .section-head p {
+      max-width: 470px;
+      color: var(--muted);
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(120px, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .step {
+      min-height: 134px;
+      padding: 16px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      position: relative;
+    }
+
+    .step:not(:last-child)::after {
+      content: ">";
+      position: absolute;
+      top: 50%;
+      right: -10px;
+      width: 18px;
+      height: 18px;
+      transform: translateY(-50%);
+      display: grid;
+      place-items: center;
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--accent);
+      font-weight: 800;
+      z-index: 1;
+    }
+
+    .step span {
+      display: block;
+      margin-bottom: 12px;
+      color: var(--accent);
+      font-size: 0.74rem;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .step p {
+      color: var(--muted);
+      font-size: 0.93rem;
+    }
+
+    .archetypes {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+    }
+
+    .archetype {
+      padding: 18px;
+      min-height: 235px;
+      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .archetype[data-tone="fast"] {
+      border-top: 5px solid var(--accent);
+    }
+
+    .archetype[data-tone="work"] {
+      border-top: 5px solid var(--blue);
+    }
+
+    .archetype[data-tone="slow"] {
+      border-top: 5px solid var(--green);
+    }
+
+    .meta {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: auto;
+    }
+
+    .metric {
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 0.84rem;
+    }
+
+    .metric b {
+      display: block;
+      color: var(--ink);
+      font-size: 0.93rem;
+    }
+
+    .columns {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 28px;
+    }
+
+    .streams {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+
+    .stream {
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.72);
+    }
+
+    .stream h3 {
+      margin-bottom: 10px;
+      color: var(--ink);
+    }
+
+    .stream p {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .list {
+      display: grid;
+      gap: 10px;
+      padding: 0;
+      margin: 0;
+      list-style: none;
+    }
+
+    .list li {
+      padding: 13px 0;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+    }
+
+    .list strong {
+      color: var(--ink);
+    }
+
+    .authority {
+      display: grid;
+      grid-template-columns: minmax(0, 0.86fr) minmax(280px, 1.14fr);
+      gap: 28px;
+      align-items: start;
+      padding: 28px;
+      border-radius: 8px;
+      background: #20211f;
+      color: #f8f3e8;
+    }
+
+    .authority p,
+    .authority li {
+      color: #cec9bd;
+    }
+
+    .authority .list li {
+      border-color: rgba(255, 255, 255, 0.16);
+    }
+
+    .authority .list strong {
+      color: #fff7e8;
+    }
+
+    .audit-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 12px;
+    }
+
+    .audit-card {
+      padding: 16px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: var(--surface);
+    }
+
+    .audit-card code {
+      display: block;
+      margin-bottom: 9px;
+      color: var(--blue);
+      overflow-wrap: anywhere;
+    }
+
+    .audit-card p {
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .detail-stack {
+      display: grid;
+      gap: 18px;
+    }
+
+    .detail-block {
+      padding: 20px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.78);
+    }
+
+    .detail-block h3 {
+      margin-bottom: 12px;
+    }
+
+    .formula {
+      display: block;
+      margin: 12px 0;
+      padding: 12px;
+      border-radius: 6px;
+      background: #20211f;
+      color: #f8f3e8;
+      overflow-x: auto;
+    }
+
+    .detail-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.91rem;
+    }
+
+    .detail-table th,
+    .detail-table td {
+      padding: 9px 8px;
+      border-bottom: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .detail-table th {
+      color: var(--ink);
+      font-size: 0.76rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .detail-table td {
+      color: var(--muted);
+    }
+
+    .detail-table strong {
+      color: var(--ink);
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.93em;
+      color: var(--accent);
+    }
+
+    .authority code {
+      color: #f3b36e;
+    }
+
+    footer {
+      padding-top: 28px;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    @media (max-width: 860px) {
+      header,
+      .columns,
+      .authority {
+        grid-template-columns: 1fr;
+      }
+
+      .flow,
+      .archetypes,
+      .streams,
+      .audit-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .detail-table {
+        display: block;
+        overflow-x: auto;
+        white-space: nowrap;
+      }
+
+      .step {
+        min-height: auto;
+      }
+
+      .step:not(:last-child)::after {
+        top: auto;
+        right: 18px;
+        bottom: -13px;
+        transform: rotate(90deg);
+      }
+
+      .section-head {
+        display: grid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <span class="tag">Cafe simulation</span>
+        <h1>Deterministic customer profiles</h1>
+      </div>
+      <div class="truth">
+        <strong>Customers are not LLM agents.</strong>
+        <p class="lede">They are reproducible demand patterns. Emergence comes from profile parameters meeting live cafe state: menu, stock, queue, wait time, seats, and order outcomes.</p>
+      </div>
+    </header>
+
+    <section aria-labelledby="flow-title">
+      <div class="section-head">
+        <h2 id="flow-title">How one customer is born</h2>
+        <p>The system separates identity, preferences, and behavior so the same seed can produce the same pattern again.</p>
+      </div>
+      <div class="flow" aria-label="Customer profile generation flow">
+        <div class="step">
+          <span>1. Seed</span>
+          <h3><code>CUSTOMER_RANDOM_SEED</code></h3>
+          <p>Optional config value creates a repeatable random stream for customer generation.</p>
+        </div>
+        <div class="step">
+          <span>2. RNG</span>
+          <h3>Shared customer random</h3>
+          <p>Each spawn consumes that stream, then creates a separate visit RNG for top-three order choice and reorder checks.</p>
+        </div>
+        <div class="step">
+          <span>3. Archetype</span>
+          <h3>Weighted base pattern</h3>
+          <p>The profile starts as a Hurried Commuter, Remote Worker, or Leisure Customer.</p>
+        </div>
+        <div class="step">
+          <span>4. Profile</span>
+          <h3>Rolled traits</h3>
+          <p>Budget, patience, preferences, dwell time, and order limits are rolled inside archetype ranges.</p>
+        </div>
+        <div class="step">
+          <span>5. Visit</span>
+          <h3>Deterministic loop</h3>
+          <p>The customer reads live world state, evaluates friction, orders, waits, consumes, maybe reorders, then leaves.</p>
+        </div>
+      </div>
+    </section>
+
+    <section aria-labelledby="streams-title">
+      <div class="section-head">
+        <h2 id="streams-title">The data streams that create emergence</h2>
+        <p>No one stream is complex. The interesting behavior comes from several small streams meeting every few seconds.</p>
+      </div>
+      <div class="streams">
+        <article class="stream">
+          <h3>Profile stream</h3>
+          <p>Archetype weight, item preferences, category preferences, dislikes, budget, max items, max orders, patience, seat need, dwell target, reorder chance, and leave-after-pickup.</p>
+        </article>
+        <article class="stream">
+          <h3>Menu stream</h3>
+          <p>Only live orderable items are considered. Price filters candidates against remaining budget; item/category scores rank the affordable combinations.</p>
+        </article>
+        <article class="stream">
+          <h3>Operations stream</h3>
+          <p>Queue length, elapsed wait, empty table count, and failed stock preparation continually feed the customer friction calculation.</p>
+        </article>
+        <article class="stream">
+          <h3>Runtime stream</h3>
+          <p>Orders placed, budget spent, active order, held items, consumed items, table assignment, visit phase, and next reorder time update as the visit unfolds.</p>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="audit-title">
+      <div class="section-head">
+        <h2 id="audit-title">Audit map: where the customer brain lives</h2>
+        <p>The “brain” is not one black box. It is a small chain of modules, each owning one kind of decision.</p>
+      </div>
+      <div class="audit-grid">
+        <article class="audit-card">
+          <code>customers/archetypes.py</code>
+          <p>Defines the behavioral templates: segment weights, taste weights, budget/patience ranges, seating pressure, dwell ranges, reorder chance, and friction constants.</p>
+        </article>
+        <article class="audit-card">
+          <code>customers/profile.py</code>
+          <p>Turns one spawn RNG into a frozen profile: picks the weighted archetype, shuffles/ranks preferences, and rolls numeric traits inside archetype ranges.</p>
+        </article>
+        <article class="audit-card">
+          <code>customers/decisions.py</code>
+          <p>Calculates the actual choices: friction totals, leave reasons, affordable candidate orders, order scores, top-three selection, and reorder eligibility.</p>
+        </article>
+        <article class="audit-card">
+          <code>customers/deterministic.py</code>
+          <p>Runs the visit state machine: enter, friction check, order, seat attempt, wait loop, consume, dwell, reorder, leave, and sync runtime fields.</p>
+        </article>
+        <article class="audit-card">
+          <code>customers/factory.py</code>
+          <p>Creates the shared seeded customer RNG, generates the profile, forks a visit RNG, and starts the deterministic visit task.</p>
+        </article>
+        <article class="audit-card">
+          <code>world.py</code>
+          <p>Owns reality: menu availability, stock, prices, queue length, table seats, orders, delivery, consumption, customer visit records, and reports.</p>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="archetype-title">
+      <div class="section-head">
+        <h2 id="archetype-title">Three demand patterns</h2>
+        <p>Archetypes are the stable outer layer. Individual profiles vary inside these boundaries.</p>
+      </div>
+      <div class="archetypes">
+        <article class="archetype" data-tone="fast">
+          <h3>Hurried Commuter</h3>
+          <p>Fast, drink-first, high queue sensitivity, no seat pressure. One order, one item, leaves after pickup, no reorder chance.</p>
+          <div class="meta">
+            <div class="metric"><b>Weight 35</b>Common morning pressure</div>
+            <div class="metric"><b>$4-$8.50</b>Budget range</div>
+            <div class="metric"><b>10-35</b>Patience range</div>
+            <div class="metric"><b>0-5 sec</b>Dwell target</div>
+          </div>
+        </article>
+
+        <article class="archetype" data-tone="work">
+          <h3>Remote Worker</h3>
+          <p>Bigger budget, strong seat need, high no-seat penalty. Up to two orders, one or two items each, 45% reorder chance.</p>
+          <div class="meta">
+            <div class="metric"><b>Weight 25</b>Lower volume, longer impact</div>
+            <div class="metric"><b>$10-$20</b>Budget range</div>
+            <div class="metric"><b>60-95</b>Patience range</div>
+            <div class="metric"><b>180-600 sec</b>Dwell target</div>
+          </div>
+        </article>
+
+        <article class="archetype" data-tone="slow">
+          <h3>Leisure Customer</h3>
+          <p>Balanced food and drink demand, medium queue and seat pressure. Up to two orders, 15% reorder chance.</p>
+          <div class="meta">
+            <div class="metric"><b>Weight 40</b>Largest baseline segment</div>
+            <div class="metric"><b>$7-$15</b>Budget range</div>
+            <div class="metric"><b>40-75</b>Patience range</div>
+            <div class="metric"><b>45-180 sec</b>Dwell target</div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section class="columns" aria-label="Profile fields and behavior">
+      <div>
+        <div class="section-head">
+          <h2>What gets rolled</h2>
+        </div>
+        <ul class="list">
+          <li><strong>Archetype</strong> is weighted at 35 commuter, 25 worker, and 40 leisure.</li>
+          <li><strong>Preferences</strong> include ranked item likes, ranked category likes, and disliked items.</li>
+          <li><strong>Buying limits</strong> include budget, max items per order, max orders per visit, and budget already spent.</li>
+          <li><strong>Friction traits</strong> include patience, queue sensitivity, no-seat sensitivity, and seat need.</li>
+          <li><strong>Stay behavior</strong> includes dwell seconds, reorder chance, reorder check delay, requires-seat-to-dwell, and leave-after-pickup.</li>
+        </ul>
+      </div>
+      <div>
+        <div class="section-head">
+          <h2>What the loop does</h2>
+        </div>
+        <ul class="list">
+          <li><strong>Order scoring</strong> gives preferred items up to 30 points, preferred categories up to 18, disliked items -35, and impossible items -100.</li>
+          <li><strong>Candidate choice</strong> builds affordable one- or two-item combinations, sorts by score, then visit RNG picks among the top three.</li>
+          <li><strong>Friction math</strong> is queue length times 3/6/10, wait seconds times 0.10/0.20/0.35, plus no-seat penalty 0/8/18/35 and stockout penalty 12.</li>
+          <li><strong>Leaving</strong> happens when total friction is greater than patience, or when budget/menu/seating rules make the visit impossible.</li>
+          <li><strong>Reordering</strong> requires no active order, remaining budget, available candidates, enough time elapsed, friction within patience, and a reorder-chance roll.</li>
+        </ul>
+      </div>
+    </section>
+
+    <section aria-labelledby="brain-title">
+      <div class="section-head">
+        <h2 id="brain-title">Specific decision calculations</h2>
+        <p>This is the audit layer: the inputs, gates, formulas, and outputs that decide what a customer does.</p>
+      </div>
+      <div class="detail-stack">
+        <article class="detail-block">
+          <h3>1. Profile generation</h3>
+          <table class="detail-table">
+            <thead>
+              <tr>
+                <th>Decision</th>
+                <th>Calculation</th>
+                <th>Output field</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Pick segment</strong></td>
+                <td>Roll uniformly from total weight 100: commuter 35, worker 25, leisure 40.</td>
+                <td><code>archetype_id</code>, <code>display_name</code></td>
+              </tr>
+              <tr>
+                <td><strong>Rank tastes</strong></td>
+                <td>Shuffle item/category keys, then sort by archetype weight descending. This gives stable priority with seeded tie variation.</td>
+                <td><code>preferred_items</code>, <code>disliked_items</code>, <code>preferred_categories</code></td>
+              </tr>
+              <tr>
+                <td><strong>Roll resources</strong></td>
+                <td>Budget uses <code>uniform(min,max)</code>, rounded to cents. Patience, dwell, max items, and reorder delay use integer range rolls.</td>
+                <td><code>budget</code>, <code>patience</code>, <code>dwell_seconds</code>, <code>max_items_per_order</code></td>
+              </tr>
+              <tr>
+                <td><strong>Copy rules</strong></td>
+                <td>Some behavior is copied directly from archetype, not rolled.</td>
+                <td><code>max_orders_per_visit</code>, <code>seat_need</code>, <code>queue_sensitivity</code>, <code>no_seat_sensitivity</code>, <code>reorder_chance</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+
+        <article class="detail-block">
+          <h3>2. Order selection</h3>
+          <code class="formula">score = item preference + category preference - disliked penalty - budget pressure + multi-item bonus</code>
+          <table class="detail-table">
+            <thead>
+              <tr>
+                <th>Stage</th>
+                <th>Exact rule</th>
+                <th>Why it matters</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Candidate filter</strong></td>
+                <td>Keep menu items where <code>orderable</code> is true and price is within remaining budget.</td>
+                <td>Live stock and operator menu toggles directly shape demand.</td>
+              </tr>
+              <tr>
+                <td><strong>Combination builder</strong></td>
+                <td>Build every 1-item to <code>max_items_per_order</code> combination whose total price fits budget.</td>
+                <td>Workers and leisure customers can produce two-item orders; commuters cannot.</td>
+              </tr>
+              <tr>
+                <td><strong>Preference score</strong></td>
+                <td>Preferred item adds <code>30 - rank*4</code>. Preferred category adds <code>18 - rank*4</code>. Disliked item subtracts 35.</td>
+                <td>A customer may still pick a lower-ranked item if budget, category, or availability shifts the top options.</td>
+              </tr>
+              <tr>
+                <td><strong>Price pressure</strong></td>
+                <td>Subtract <code>(total / budget_remaining) * 8</code>. Two-item orders add 4.</td>
+                <td>Customers prefer good fits, but spending most of the remaining budget slightly hurts a candidate.</td>
+              </tr>
+              <tr>
+                <td><strong>Final pick</strong></td>
+                <td>Sort candidates, keep the top three above -50, then visit RNG chooses one.</td>
+                <td>The best-scoring order is not always picked, but the result stays reproducible for a seed.</td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+
+        <article class="detail-block">
+          <h3>3. Friction and leaving</h3>
+          <code class="formula">total friction = queue + wait + no_seat + stockout</code>
+          <table class="detail-table">
+            <thead>
+              <tr>
+                <th>Part</th>
+                <th>Exact calculation</th>
+                <th>Used when</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Queue</strong></td>
+                <td><code>queue_length * QUEUE_WEIGHTS[sensitivity]</code>, where low/medium/high are 3/6/10.</td>
+                <td>Before ordering, while waiting, and while dwelling.</td>
+              </tr>
+              <tr>
+                <td><strong>Wait</strong></td>
+                <td><code>elapsed_wait_seconds * WAIT_WEIGHTS[sensitivity]</code>, where low/medium/high are 0.10/0.20/0.35.</td>
+                <td>Uses arrival time for general checks, and order placed time while waiting on an active order.</td>
+              </tr>
+              <tr>
+                <td><strong>No seat</strong></td>
+                <td>If no open seats and seat need is medium/high, add no-seat sensitivity penalty: none/low/medium/high = 0/8/18/35.</td>
+                <td>Seat pressure can make workers leave even when the queue is manageable.</td>
+              </tr>
+              <tr>
+                <td><strong>Stockout</strong></td>
+                <td>After a failed order, add <code>stockout_disappointment * 12</code>.</td>
+                <td>Failed preparation can push a customer over patience or trigger replacement ordering.</td>
+              </tr>
+              <tr>
+                <td><strong>Leave gate</strong></td>
+                <td>If <code>total friction &gt; profile.patience</code>, leave. Reason is no seats if no-seat dominates queue, stockout if stockout exists, otherwise impatient.</td>
+                <td>This is the core patience threshold for the deterministic brain.</td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+
+        <article class="detail-block">
+          <h3>4. Visit state machine</h3>
+          <table class="detail-table">
+            <thead>
+              <tr>
+                <th>Phase</th>
+                <th>Gate</th>
+                <th>State written back</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>arrived</strong></td>
+                <td>Register visit, then immediately test current friction.</td>
+                <td>Profile identity, budget, patience, seat need, phase, empty held/consumed/order lists.</td>
+              </tr>
+              <tr>
+                <td><strong>waiting</strong></td>
+                <td>Place order through world. If world rejects menu/stock, leave with <code>nothing_appealing</code>.</td>
+                <td><code>active_order_id</code>, order ids, orders placed, phase waiting.</td>
+              </tr>
+              <tr>
+                <td><strong>seat attempt</strong></td>
+                <td>Low seat need skips tables. Medium/high claims first table with open capacity. High no-seat sensitivity may leave immediately if friction exceeds patience.</td>
+                <td><code>table_id</code> and <code>table_claimed_at</code> when seated.</td>
+              </tr>
+              <tr>
+                <td><strong>order result</strong></td>
+                <td>Ready orders become delivered and held. Failed orders may create a replacement order if budget and max-order gates allow it.</td>
+                <td>Held items, budget spent, received time, next reorder check, order_failed phase if needed.</td>
+              </tr>
+              <tr>
+                <td><strong>consuming</strong></td>
+                <td>Every held item is consumed through world; drinks use <code>sip_drink</code>, food uses <code>eat_item</code>.</td>
+                <td>Consumed item ids and consumption start time.</td>
+              </tr>
+              <tr>
+                <td><strong>dwelling</strong></td>
+                <td>Pickup-only customers dwell for max 5 seconds. Others dwell for profile target; workers require a seat to dwell.</td>
+                <td>Dwell start, recurring friction snapshots, possible reorder attempts.</td>
+              </tr>
+              <tr>
+                <td><strong>done</strong></td>
+                <td>Leave satisfied, impatient, no seats, too expensive, nothing appealing, or cancelled.</td>
+                <td>Left time, reason, released table, actual dwell seconds, unconsumed-item flag.</td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+
+        <article class="detail-block">
+          <h3>5. Reorder gates</h3>
+          <table class="detail-table">
+            <thead>
+              <tr>
+                <th>Gate</th>
+                <th>Must be true</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Visit is open</strong></td>
+                <td>Customer is not done and has no active order.</td>
+              </tr>
+              <tr>
+                <td><strong>Order cap remains</strong></td>
+                <td><code>orders_placed &lt; max_orders_per_visit</code>.</td>
+              </tr>
+              <tr>
+                <td><strong>Budget remains</strong></td>
+                <td><code>budget_spent &lt; budget</code> and at least one affordable order candidate exists.</td>
+              </tr>
+              <tr>
+                <td><strong>Time has arrived</strong></td>
+                <td><code>next_reorder_check_at</code> exists and current time is past it.</td>
+              </tr>
+              <tr>
+                <td><strong>Still patient</strong></td>
+                <td>Current friction does not exceed patience.</td>
+              </tr>
+              <tr>
+                <td><strong>Chance roll passes</strong></td>
+                <td>Visit RNG roll is less than archetype reorder chance: commuter 0%, worker 45%, leisure 15%.</td>
+              </tr>
+            </tbody>
+          </table>
+        </article>
+      </div>
+    </section>
+
+    <section class="authority" aria-labelledby="authority-title">
+      <div>
+        <h2 id="authority-title">The world stays authoritative</h2>
+        <p>Profiles describe demand. They do not directly mutate the cafe. The world accepts, rejects, records, and reports every operational action.</p>
+      </div>
+      <ul class="list">
+        <li><strong>Orders and stock</strong> are owned by world methods, so sold-out and preparation failures stay consistent.</li>
+        <li><strong>Tables and phases</strong> are synced into customer visits for dashboard visibility.</li>
+        <li><strong>Metrics and reports</strong> capture spawns, lifecycle events, wait behavior, consumption, revenue, and archetype totals.</li>
+      </ul>
+    </section>
+
+    <footer>
+      Source seams: <code>customers/profile.py</code>, <code>customers/archetypes.py</code>, <code>customers/factory.py</code>, and the README customer section.
+    </footer>
+  </main>
+</body>
+</html>

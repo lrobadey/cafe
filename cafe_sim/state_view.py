@@ -47,6 +47,7 @@ def build_live_snapshot(controller) -> dict:
             ),
             "day_summary": controller.campaign.current_day.summary,
             "history": controller.campaign.history_snapshot(),
+            "manager": controller.get_manager_state(),
         }
     )
     return snapshot
@@ -155,6 +156,15 @@ def _build_queue_rows(world, customer_by_id: dict) -> list[dict]:
 def _build_agent_thinking(world, active_customers: list[dict], sim_state: dict) -> list[dict]:
     active_by_id = {customer["customer_id"]: customer for customer in active_customers}
     agent_rows = []
+    thinking = world.get_agent_thinking_entries()
+    if "manager" in thinking:
+        agent_rows.append(
+            {
+                "agent_id": "manager",
+                "agent_type": "manager",
+                "display_name": thinking["manager"].get("display_name", "Manager"),
+            }
+        )
     if sim_state.get("running"):
         for staff_id, staff in world.get_staff().items():
             if staff["role"] == "barista":
@@ -174,7 +184,6 @@ def _build_agent_thinking(world, active_customers: list[dict], sim_state: dict) 
             }
         )
 
-    thinking = world.get_agent_thinking_entries()
     return [
         {
             **row,

@@ -7,10 +7,13 @@ from openai import AsyncOpenAI
 
 # Model routing
 BARISTA_MODEL = "gpt-5.5"
+MANAGER_MODEL = "gpt-5.5"
 
 # OpenAI Responses API controls
 REASONING_EFFORT = "low"
 REASONING_SUMMARY = "auto"
+MANAGER_REASONING_EFFORT = "medium"
+MANAGER_REASONING_SUMMARY = "auto"
 STORE_RESPONSES = True
 
 # Timing (real seconds)

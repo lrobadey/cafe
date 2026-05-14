@@ -296,6 +296,24 @@ button:disabled {
   line-height: 1.45;
 }
 
+.prep-manager {
+  display: grid;
+  gap: 10px;
+}
+
+.prep-manager .secondary {
+  width: fit-content;
+}
+
+.prep-manager p {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.manager-line {
+  cursor: pointer;
+}
+
 .floor {
   min-height: 0;
   height: 100%;
@@ -438,7 +456,8 @@ button:disabled {
 .event-line,
 .menu-line,
 .pulse-item,
-.prep-line {
+.prep-line,
+.manager-line {
   outline: 0;
 }
 
@@ -451,7 +470,8 @@ button:disabled {
 .event-line:focus-visible,
 .menu-line:focus-visible,
 .pulse-item:focus-visible,
-.prep-line:focus-visible {
+.prep-line:focus-visible,
+.manager-line:focus-visible {
   box-shadow: 0 0 0 3px rgba(47, 118, 81, 0.25);
 }
 

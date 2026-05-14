@@ -8,6 +8,7 @@ const state = {
   seenThoughts: new Set(),
   thoughtBubbles: new Map(),
   activeThoughtKeys: new Set(),
+  managerBusy: false,
 };
 
 const appNode = document.getElementById("app");
@@ -254,6 +255,25 @@ function getPerson(snapshot, id) {
   if ((snapshot.staff || {})[id]) {
     return { kind: "staff", id, ...snapshot.staff[id] };
   }
+  const thinking = getThinkingByAgent(snapshot).get(id);
+  if (thinking?.agent_type === "manager") {
+    return {
+      kind: "manager",
+      id,
+      display_name: thinking.display_name || "Manager",
+      last_action: snapshot.manager?.last_summary,
+      tool_results: snapshot.manager?.last_tool_result_count,
+    };
+  }
+  if (id === "manager" && snapshot.manager?.last_summary) {
+    return {
+      kind: "manager",
+      id,
+      display_name: "Manager",
+      last_action: snapshot.manager.last_summary,
+      tool_results: snapshot.manager.last_tool_result_count,
+    };
+  }
   return (snapshot.active_customers || []).find((customer) => customer.customer_id === id) || null;
 }
 
@@ -300,10 +320,11 @@ function renderPhaseActions(snapshot) {
   clear(phaseActionsNode);
   const sim = snapshot.simulation;
   const calendar = snapshot.calendar;
+  const manager = snapshot.manager || {};
 
   if (getMode(snapshot) === "planning") {
     phaseActionsNode.appendChild(
-      actionButton("Open day", "primary", sim.phase === "closing" || calendar.phase === "settled", () =>
+      actionButton("Open day", "primary", sim.phase === "closing" || calendar.phase === "settled" || manager.running, () =>
         runControl(() => api("/api/day/start", "POST"), "Day opened.")
       )
     );
@@ -381,6 +402,9 @@ function renderPrep(snapshot) {
   const sim = snapshot.simulation;
   const calendar = snapshot.calendar;
   const locked = sim.running || sim.phase === "closing" || calendar.phase === "settled";
+  const manager = snapshot.manager || {};
+  const managerThinking = getThinkingByAgent(snapshot).get("manager");
+  const managerActive = state.managerBusy || manager.running;
 
   const supplyRail = createElement("div", "prep-supplies");
   appendText(supplyRail, "h3", null, "Restock");
@@ -421,7 +445,22 @@ function renderPrep(snapshot) {
   appendText(settingsRail, "p", null, `Customers every ${sim.spawn_interval}s for ${sim.sim_duration}s.`);
   appendText(settingsRail, "p", null, "Fine controls live in Back office.");
 
-  prepCounterNode.append(supplyRail, menuRail, settingsRail);
+  const managerRail = createElement("div", "prep-manager");
+  appendText(managerRail, "h3", null, "Manager");
+  const managerButton = createElement("button", "secondary", managerActive ? "Manager thinking..." : "Ask Manager to Restock");
+  managerButton.type = "button";
+  managerButton.disabled = locked || managerActive || !snapshot.history?.recent_days?.length;
+  managerButton.addEventListener("click", runManagerRestock);
+  managerRail.appendChild(managerButton);
+  const managerLine = selectable(createElement("div", "prep-stat manager-line"), "person", "manager");
+  appendText(managerLine, "span", null, managerActive ? "Current plan" : "Last plan");
+  appendText(managerLine, "strong", null, managerActive ? "planning" : manager.last_summary ? clampText(manager.last_summary, 34) : "none");
+  managerRail.appendChild(managerLine);
+  if (managerThinking?.summary || managerActive) {
+    appendText(managerRail, "p", null, managerThinking?.summary ? clampText(managerThinking.summary, 150) : "Waiting for manager reasoning...");
+  }
+
+  prepCounterNode.append(supplyRail, menuRail, settingsRail, managerRail);
 }
 
 function renderPerson(node, person, thinking, kind = "customer") {
@@ -680,7 +719,13 @@ function renderInspector() {
       return;
     }
     appendText(inspectorContentNode, "h2", null, person.display_name || person.name || id);
-    if (person.kind === "staff") {
+    if (person.kind === "manager") {
+      addInspectorRows([
+        ["Status", state.managerBusy || snapshot.manager?.running ? "planning" : "idle"],
+        ["Last plan", person.last_action],
+        ["Tool results", person.tool_results],
+      ]);
+    } else if (person.kind === "staff") {
       addInspectorRows([
         ["Status", person.status || "active"],
         ["Current order", person.current_order_id],
@@ -704,8 +749,8 @@ function renderInspector() {
         ["Consumed", formatItemList(person.consumed_item_names)],
       ]);
     }
-    if (person.kind === "staff" && thinking?.summary) {
-      appendText(inspectorContentNode, "h3", null, "Reasoning summary");
+    if ((person.kind === "staff" || person.kind === "manager") && thinking?.summary) {
+      appendText(inspectorContentNode, "h3", null, person.kind === "manager" ? "Full reasoning summary" : "Reasoning summary");
       appendText(inspectorContentNode, "p", "thought-full", thinking.summary);
     }
     return;
@@ -858,6 +903,28 @@ async function runControl(action, successMessage) {
     }
   } catch (error) {
     setNotice(error.message || "Control request failed.", true);
+  }
+}
+
+async function runManagerRestock() {
+  state.managerBusy = true;
+  if (state.snapshot) {
+    renderPrep(state.snapshot);
+  }
+  try {
+    await api("/api/manager/restock", "POST");
+    state.selected = { kind: "person", id: "manager" };
+    await refreshSnapshot();
+    setNotice("Manager restock plan complete.");
+  } catch (error) {
+    setNotice(error.message || "Manager restock request failed.", true);
+  } finally {
+    state.managerBusy = false;
+    if (state.snapshot) {
+      renderPrep(state.snapshot);
+      renderInspector();
+      markSelected();
+    }
   }
 }
 
